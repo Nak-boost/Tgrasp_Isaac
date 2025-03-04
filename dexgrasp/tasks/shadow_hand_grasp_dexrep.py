@@ -85,7 +85,7 @@ class ShadowHandGraspDexRep(BaseTask):
         if self.obs_type in _DexRepEncoder_Map.keys():
             assert "dexrep" in cfg.keys()
             self.use_dexrep = True
-            self.DexRepEncoder = _DexRepEncoder_Map[self.obs_type](cfg)
+            self.DexRepEncoder = _DexRepEncoder_Map[self.obs_type](cfg, device_type+f":{device_id}")
         else:
             self.use_dexrep = False
 
@@ -245,6 +245,7 @@ class ShadowHandGraspDexRep(BaseTask):
         # max_agg_shapes = self.num_shadow_hand_shapes * 1 + 2 * self.num_object_shapes + 1  ##
 
         self.shadow_hands = []
+        self.objects = []
         self.envs = []
         self.object_init_state = []
         self.goal_init_state = []
@@ -369,6 +370,7 @@ class ShadowHandGraspDexRep(BaseTask):
 
             self.envs.append(env_ptr)
             self.shadow_hands.append(shadow_hand_actor)
+            self.objects.append(object_handle)
 
 
         self.object_init_state = to_torch(self.object_init_state, device=self.device, dtype=torch.float).view(self.num_envs, 13)

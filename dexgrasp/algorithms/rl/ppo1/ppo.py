@@ -444,9 +444,10 @@ class PPO:
 
 
         current_obs_state = self.vec_env.reset()
-        while len(reward_sum) < maxlen:
+        while len(reward_sum) < self.vec_env.num_envs*max_trajs:#*self.cfg_env["episodeLength"]:
             with torch.no_grad():
                 # Compute the action
+                # actions, actions_log_prob, values, mu, sigma, current_state, current_obs_feats = self.actor_critic.act(current_obs_state)
                 actions = self.actor_critic.act_inference(current_obs_state)
                 # Step the vec_environment
                 next_obs_state, rews, dones, infos = self.vec_env.step(actions)
@@ -471,3 +472,4 @@ class PPO:
                     print("Mean return: {:.2f}".format(statistics.mean(reward_sum)))
                     print("Mean ep len: {:.2f}".format(statistics.mean(episode_length)))
                     print("Mean success: {:.2f}".format(statistics.mean(successes) * 100))
+        logger.log_kv("Mean success", statistics.mean(successes) * 100)

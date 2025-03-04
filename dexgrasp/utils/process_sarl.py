@@ -188,7 +188,7 @@ def process_ppo1(args, env, cfg, logdir):
     #                     )
 
     # ppo.test("/home/hp-3070/logs/demo/scissors/ppo_seed0/model_6000.pt")
-    if is_testing and args.model_dir != "":
+    if args.test and args.model_dir != "":
         print("Loading model from {}".format(chkpt_path))
         model.test(chkpt_path)
     elif args.model_dir != "":

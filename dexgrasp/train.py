@@ -4,10 +4,12 @@
 # and any modifications thereto.  Any use, reproduction, disclosure or
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
-
+import os
 from ast import arg
 import numpy as np
 import random
+import shutil
+import yaml
 
 from utils.config import set_np_formatting, set_seed, get_args, parse_sim_params, load_cfg
 from utils.parse_task import parse_task
@@ -18,6 +20,17 @@ from utils.logger import DataLog
 def train():
     print("Algorithm: ", args.algo)
     agent_index = get_AgentIndex(cfg)
+    if not args.test:
+        config_params = vars(args)
+        # save all config
+        os.makedirs(args.logdir, exist_ok=True)
+        with open(os.path.join(args.logdir, 'all_config.yaml'), 'w') as f:
+            f.write(yaml.dump(config_params))
+        shutil.copy(args.cfg_env, args.logdir)
+    else:
+        args.model_dir = os.path.join(args.logdir, 'checkpoint', 'model_10000.pt')
+        print('Test model !!')
+
 
     if args.algo in ["ppo", "ppo1", "dagger", "dagger_value"]:
         task, env = parse_task(args, cfg, cfg_train, sim_params, agent_index)
@@ -29,11 +42,15 @@ def train():
         iterations = cfg_train["learn"]["max_iterations"]
         if args.max_iterations > 0:
             iterations = args.max_iterations
+
+
+
         if not args.test:
             sarl.run(num_learning_iterations=iterations, log_interval=cfg_train["learn"]["save_interval"])
         else:
             logger = DataLog()
-            sarl.eval(logger, max_trajs=100, record_video=False)
+            sarl.eval(logger, max_trajs=20, record_video=False)
+            logger.save_log(args.logdir, "evaluation_test_test")
     else:
         print("Unrecognized algorithm!")
 

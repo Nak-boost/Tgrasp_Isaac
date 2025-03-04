@@ -3,6 +3,8 @@ dexrep:
   sample_method: 'average'
   sample_num_points: 2048
   batch_norm_pnfeat: False
+  ambient_voxel_length: 0.02
+  dis_max_range: 0.2
 env:
   env_name: "shadow_hand_grasp_dexrep_dexgrasp"
   numEnvs: 241
@@ -16,6 +18,8 @@ env:
   repose_z: True
   goal_cond: False
   num_objs: 800
+  obj_fric: 1.0
+  fric_type: 'fixed' # fixed   random
 
   object_code_dict:
     - 'core/remote-4df6e942001af26f16a077c4c0fc1181-0.1'
@@ -285,7 +289,7 @@ env:
   fallDistance: 0.4
   fallPenalty: 0.0
 
-  objectType: "pot" 
+  objectType: "pot"
   observationType: "DexRep"
   obs_dim:
     prop: 207 # 211 #propriception
