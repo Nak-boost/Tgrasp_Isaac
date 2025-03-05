@@ -5,12 +5,8 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 import os
-from ast import arg
-import numpy as np
-import random
 import shutil
 import yaml
-
 from utils.config import set_np_formatting, set_seed, get_args, parse_sim_params, load_cfg
 from utils.parse_task import parse_task
 from utils.process_sarl import *
@@ -28,7 +24,7 @@ def train():
             f.write(yaml.dump(config_params))
         shutil.copy(args.cfg_env, args.logdir)
     else:
-        args.model_dir = os.path.join(args.logdir, 'checkpoint', 'model_10000.pt')
+        args.model_dir = os.path.join(args.logdir, 'checkpoint', 'model.pt')
         print('Test model !!')
 
 
@@ -49,7 +45,7 @@ def train():
             sarl.run(num_learning_iterations=iterations, log_interval=cfg_train["learn"]["save_interval"])
         else:
             logger = DataLog()
-            sarl.eval(logger, max_trajs=20, record_video=False)
+            sarl.eval(logger, max_trajs=100, record_video=False)
             logger.save_log(args.logdir, "evaluation_test_test")
     else:
         print("Unrecognized algorithm!")
