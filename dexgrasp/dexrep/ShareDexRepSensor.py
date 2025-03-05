@@ -2,16 +2,12 @@
 
 import os
 import numpy as np
-from numpy.random import RandomState
-
 import trimesh
 import torch
 import point_cloud_utils as pcu
-
 import open3d as o3d
-import copy
 
-from pathlib import Path
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 

@@ -1,13 +1,10 @@
-import os.path
-import pickle
 import warnings
 
 import gym
 import torch
-import trimesh
 from gym.envs.registration import register
 import numpy as np
-# from mjrl.utils.gym_env import GymEnv
+
 
 def RegisterEnv(obj_name=None, env_py='grasp0_v0', env_maker=True, render=False, mode='template'):
 

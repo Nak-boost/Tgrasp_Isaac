@@ -6,7 +6,6 @@
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 import sys
-import os
 import operator
 from copy import deepcopy
 import random

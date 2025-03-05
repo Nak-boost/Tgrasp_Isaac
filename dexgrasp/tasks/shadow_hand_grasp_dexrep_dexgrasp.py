@@ -4,24 +4,10 @@
 # and any modifications thereto.  Any use, reproduction, disclosure or
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
-from unittest import TextTestRunner
-import xxlimited
-from matplotlib.pyplot import axis
-import numpy as np
-import os
-import os.path as osp
-import random
-
-from pyparsing import And
-import torch
-from tqdm import tqdm
 
 from utils.torch_jit_utils import *
-from utils.data_info import plane2euler
-from tasks.hand_base.base_task import BaseTask
 from isaacgym import gymtorch
 from isaacgym import gymapi
-import open3d as o3d
 from tasks.shadow_hand_grasp_dexrep import ShadowHandGraspDexRep
 class ShadowHandGraspDexRepDexgrasp(ShadowHandGraspDexRep):
     def __init__(self, cfg, sim_params, physics_engine, device_type, device_id, headless,

@@ -1,21 +1,13 @@
 import os.path
-import time
-# kakureteru kokoro no doa wo kojiaketа
 import open3d as o3d
 import numpy as np
 import copy
-
 import torch
 from dexrep.utils import penetration, pc_normalize_tensor, pc_normalize2_tensor, denormalize, DotDict
 from dexrep.pointnet_model.model_rec import ShapeNetAutoEncoder
-# from pcd_rec_pretrain.model_rec import ShapeNetPnetEncoder, ShapeNetPnet2Encoder, ShapeNetPCTEncoder
-# from pcd_rec_pretrain.pointnet2.pointnet2_part_seg_ssg import get_model as pointnet2_part_seg_ssg
-# from pcd_rec_pretrain.model_rec1 import ShapeNetPCTEncoder2
-# from scipy.spatial.transform import Rotation as R
 from pytorch3d.transforms import quaternion_to_matrix
 import dexrep.utils as util
 
-# from utils.szn_utils import sdf_signs_query_points
 
 # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # device = torch.device('cpu')
@@ -54,39 +46,7 @@ class cv_space(object):
         self.batch_split_num = 50
 
         self.all_cubes_center = None
-        # self.hand_body_idx = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 24, 25, 26])#[3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 26, 27, 28]
-        # self.hand_body_idx_except_knuckle = np.array([1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15, 16, 18, 19, 20, 22, 24, 25, 26])#[3, 4, 5, 7, 8, 9, 11, 12, 13, 15, 16, 17, 18, 20, 21, 22, 24, 26, 27, 28]
-        # self.hand_body_idx = torch.LongTensor([3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 26, 27,28]).to(device)  # [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 26, 27, 28]
-        # self.hand_body_idx_except_knuckle = torch.LongTensor([3, 4, 5, 7, 8, 9, 11, 12, 13, 15, 16, 17, 18, 20, 21, 22, 24, 26, 27,28]).to(device)  # [3, 4, 5, 7, 8, 9, 11, 12, 13, 15, 16, 17, 18, 20, 21, 22, 24, 26, 27, 28]
-        # self.hand_body_name = []
-        # for idx in self.hand_body_idx:
-        #     self.hand_body_name.append(piece_hand_names[idx])
-        # self.hand_body_name_except_knuckle = []
-        # for idx in self.hand_body_idx_except_knuckle:
-        #     self.hand_body_name_except_knuckle.append(piece_hand_names[idx])
-        # # import obj info
-        # if mode == 'grab':
-        #     all_obj_info = np.load(os.path.join(os.path.dirname(self.curr_dir), 'obj_info/obj_info.npy'),
-        #                            allow_pickle=True).item()
-        #     self.obj_info = all_obj_info[obj_name.lower()]
-        # elif mode == 'shapenet':
-        #     path = '/home/zjunesc/LQT/grasp/grasp_sensor1209/shapenet_obj_info/obj_info'
-        #     all_obj_info = np.load(os.path.join(path, '%s.pkl' % categ), allow_pickle=True)['categ_objs_info']
-        #     self.obj_info = all_obj_info[obj_name + '.obj']
-        #
-        # elif mode=='3dnet':
-        #     path = '../../../obj_info/3dnet/obj_info'
-        #     path = os.path.join(self.curr_dir, path)
-        #     all_obj_info = np.load(os.path.join(path, '3dnet_obj_info.pkl'), allow_pickle=True)
-        #     self.obj_info = all_obj_info[obj_name.lower()]
-        # elif mode=='dexgraspnet':
-        #     path = '../../../obj_info/DexGraspNet/obj_info'
-        #     path = os.path.join(self.curr_dir, path)
-        #     all_obj_info = np.load(os.path.join(path, 'dexgraspnet_obj_info.pkl'), allow_pickle=True)
-        #     self.obj_info = all_obj_info[obj_name[0].lower()+obj_name[1:]]
-        # self.import_mesh(mesh_dir)
-        #
-        # self.cnt = 0
+
 
     def create_grid(self, length, length_per_cube, dtype=torch.float32):
         start = -(length - length_per_cube) / 2
