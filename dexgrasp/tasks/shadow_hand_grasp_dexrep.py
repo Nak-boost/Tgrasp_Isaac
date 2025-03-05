@@ -185,7 +185,8 @@ class ShadowHandGraspDexRep(BaseTask):
 
         self.grasp_data = {}
         assets_path = '../assets'
-        dataset_root_path = osp.join(assets_path, 'datasetv4.1')
+        print(f'Num Objs: {len(self.object_code_list)}')
+        print(f'Num Envs: {self.num_envs}')
 
         self.goal_cond = self.cfg["env"]["goal_cond"]
         self.random_prior = self.cfg['env']['random_prior']

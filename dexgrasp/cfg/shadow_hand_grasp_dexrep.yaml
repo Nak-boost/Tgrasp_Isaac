@@ -17,6 +17,7 @@ env:
   random_time: True
   repose_z: True
   goal_cond: False
+  num_objs: 40
 
   object_code_dict:
     - 'hammer'

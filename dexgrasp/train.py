@@ -24,6 +24,7 @@ def train():
             f.write(yaml.dump(config_params))
         shutil.copy(args.cfg_env, args.logdir)
     else:
+        cfg["env"]["numEnvs"] = cfg["env"]["num_objs"]
         args.model_dir = os.path.join(args.logdir, 'checkpoint', 'model.pt')
         print('Test model !!')
 
