@@ -17,7 +17,7 @@ env:
   random_time: True
   repose_z: True
   goal_cond: False
-  num_objs: 800
+  num_objs: 200
   obj_fric: 1.0
   fric_type: 'fixed' # fixed   random
 

@@ -3,6 +3,8 @@ dexrep:
   sample_method: 'average'
   sample_num_points: 2048
   batch_norm_pnfeat: False
+  ambient_voxel_length: 0.02
+  dis_max_range: 0.2
 env:
   env_name: "shadow_hand_grasp_dexrep"
   numEnvs: 1024
