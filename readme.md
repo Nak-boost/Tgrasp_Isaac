@@ -26,12 +26,10 @@ This is the official code for "**DexRepNet: Learning Dexterous Robotic Grasping 
     2. Extract the downloaded files to the main directory of the project
     3. Use the following commands to install isaacgym  
     ```shell
-    cd isaacgym/python
-    pip install -e .
+    pip install -e path/to/isaacgym/python
     ```
 - Install DexRep
     ```shell
-    cd dexgrasp
     pip install -e .
     ```
 - Install pytorch3d
