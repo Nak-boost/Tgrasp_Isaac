@@ -8,7 +8,7 @@
 # from tasks.shadow_hand_grasp import ShadowHandGrasp
 # from tasks.shadow_hand_random_load_vision import ShadowHandRandomLoadVision
 from tasks.shadow_hand_grasp_dexrep import ShadowHandGraspDexRep
-# from tasks.shadow_hand_grasp_dexrep_dexgrasp import ShadowHandGraspDexRepDexgrasp
+from tasks.shadow_hand_grasp_dexrep_dexgrasp import ShadowHandGraspDexRepDexgrasp
 
 from tasks.hand_base.vec_task import VecTaskCPU, VecTaskGPU, VecTaskPython, VecTaskPythonArm
 
