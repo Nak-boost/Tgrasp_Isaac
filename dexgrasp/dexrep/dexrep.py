@@ -505,11 +505,11 @@ class cv_space(object):
             env_name = rotation.shape[0]
             all_cube_center = self.create_grid(self.length, self.length_per_cube,
                                                dtype=torch.float32).repeat(env_name, 1, 1).to(self.device)
-            off_set = torch.tensor(np.array([0, 0.045, 0]), dtype=torch.float32).to(self.device)  # (3)
+            off_set = torch.tensor(np.array([0, -self.length*0.9/2, 0]), dtype=torch.float32).to(self.device)  # (3)
         else:
             all_cube_center = self.create_grid(self.length, self.length_per_cube,
                                                dtype=torch.float32).to(self.device)  # (1000, 3)
-            off_set = torch.tensor(np.array([0, 0.045, 0]), dtype=torch.float32).to(self.device)  # (3)
+            off_set = torch.tensor(np.array([0, -self.length*0.9/2, 0]), dtype=torch.float32).to(self.device)  # (3)
         all_cube_center += off_set                            # (1000, 3)
 
         all_cube_center = torch.matmul(all_cube_center, rotation.transpose(-1, -2)) + trans.unsqueeze(-2)  # (1000, 3) * (N, 3, 3) + (N, 1, 3) -> (N, 1000, 3)
