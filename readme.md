@@ -1,14 +1,7 @@
-# DexRepNet (Based on IsaacGym)
-This repository contains the official code for "**DexRepNet: Learning Dexterous Robotic Grasping Network with Geometric and Spatial Hand-Object Representation**" _(IROS 2023)_. It demonstrates the use of **DexRep** in the Isaac simulator for robotic grasping tasks.
+# DexRep for Dexterous Grasping (Based on IsaacGym)
+This repository contains the official code for "**DexRepNet++: Learning Dexterous Robotic Manipulation With Geometric and Spatial Hand-Object Representations**" _(T-RO 2026)_. It demonstrates the use of **DexRep** in the Isaac simulator for robotic grasping tasks.
 
 [Project Page](https://lqts.github.io/DexRepNet/) | [Paper](https://arxiv.org/abs/2303.09806) | [Video](https://www.bilibili.com/video/BV1bP411b7jh/?spm_id_from=333.999.0.0)
-
-- [ ] We will release the **MuJoCo version** used in the original paper by May 2025, including:
-    - [ ] Release demonstrations
-    - [ ] Release behavior cloning (BC) code
-    - [ ] Release reinforcement learning (RL) code
-    - [ ] Release evaluation code
-    - [ ] Release trained models
 
 ## Dependencies
 - Create a conda environment:
@@ -86,6 +79,9 @@ If you encounter any issues during setup or training, please refer to the follow
 - Verify the paths in the configuration files.
 - Check the compatibility of your hardware with the required software versions.
 
+Note that we will not release the code for the MuJoCo simulator due to the old version of MuJoCo used in our experiments. However, the code for the Isaac simulator is fully functional and can be used to reproduce the results in the paper. And if you want to use **dexrep** in other simulators, you can refer to the code in this repository for implementation details.
+
+
 For further assistance, you can contact [Qingtao Liu](mailto:l_qingtao@zju.edu.cn) or [Qi Ye](mailto:qi.ye@zju.edu.cn).
 
 ## Bibtex
@@ -98,6 +94,19 @@ pages={3153--3160},
 year={2023},
 organization={IEEE}
 } 
+```
+```bibtex
+@ARTICLE{liu2026dexrepnet++,
+  author={Liu, Qingtao and Sun, Zhengnan and Cui, Yu and Li, Haoming and Li, Gaofeng and Shao, Lin and Chen, Jiming and Ye, Qi},
+  journal={IEEE Transactions on Robotics}, 
+  title={DexRepNet++: Learning Dexterous Robotic Manipulation With Geometric and Spatial Hand-Object Representations}, 
+  year={2026},
+  volume={42},
+  number={},
+  pages={799-818},
+  keywords={Hands;Geometry;Grasping;Robots;Encoding;Handover;Training;Shape;Feature extraction;Visualization;Deep learning in robotics and automation;dexterous manipulation;hand-object representation;reinforcement learning (RL)},
+  doi={10.1109/TRO.2026.3651669}}
+
 ```
 
 ## License
