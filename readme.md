@@ -3,6 +3,7 @@ This repository contains the official code for "**DexRepNet++: Learning Dexterou
 
 [Project Page](https://lqts.github.io/DexRepNet/) | [Paper(IROS)](https://arxiv.org/abs/2303.09806) | [Paper(T-RO)](https://ieeexplore.ieee.org/document/11342339)| [Video](https://www.bilibili.com/video/BV1bP411b7jh/?spm_id_from=333.999.0.0)
 
+For the two other tasks, you can access the codes in the [repository](https://github.com/PerPLe-ZJU/DexRep).
 ## Dependencies
 - Create a conda environment:
     ```shell
