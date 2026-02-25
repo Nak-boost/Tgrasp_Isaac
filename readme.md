@@ -1,7 +1,7 @@
 # DexRep for Dexterous Grasping (Based on IsaacGym)
 This repository contains the official code for "**DexRepNet++: Learning Dexterous Robotic Manipulation With Geometric and Spatial Hand-Object Representations**" _(T-RO 2026)_. It demonstrates the use of **DexRep** in the Isaac simulator for robotic grasping tasks.
 
-[Project Page](https://lqts.github.io/DexRepNet/) | [Paper](https://arxiv.org/abs/2303.09806) | [Video](https://www.bilibili.com/video/BV1bP411b7jh/?spm_id_from=333.999.0.0)
+[Project Page](https://lqts.github.io/DexRepNet/) | [Paper(IROS)](https://arxiv.org/abs/2303.09806) | [Paper(T-RO)](https://ieeexplore.ieee.org/document/11342339)| [Video](https://www.bilibili.com/video/BV1bP411b7jh/?spm_id_from=333.999.0.0)
 
 ## Dependencies
 - Create a conda environment:
