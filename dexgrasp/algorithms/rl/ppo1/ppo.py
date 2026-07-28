@@ -13,7 +13,7 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.io import write_video
 from algorithms.rl.ppo1 import RolloutStorage
-from algorithms.rl.ppo1.policy import  ActorCriticDexRep
+from algorithms.rl.ppo1.policy import ActorCriticDexRep, ActorCriticMultimodal
 
 
 import copy
@@ -21,7 +21,18 @@ from utils.tensorboard_extract import tensorboard2csv
 
 _MODEL_FUNCS = {
     "ActorCriticDexRep": ActorCriticDexRep,
+    "ActorCriticMultimodal": ActorCriticMultimodal,
 }
+
+_TACTILE_EPISODE_METRICS = {
+    "contact_found": ("Contact discovery rate", 100.0),
+    "first_contact_step": ("Mean first-contact step", 1.0),
+    "multi_contact": ("Multi-contact episode rate", 100.0),
+    "lifted": ("Lift episode rate", 100.0),
+    "contact_step_ratio": ("Contact-step ratio", 100.0),
+    "contact_losses": ("Contact losses per episode", 1.0),
+}
+
 
 class PPO:
     def __init__(self,
@@ -45,6 +56,9 @@ class PPO:
 
         self.cfg_train = copy.deepcopy(cfg_train)
         self.cfg_env = copy.deepcopy(cfg_env)
+        self.tactile_experiment = self.cfg_env.get(
+            "tactile", {}
+        ).get("experiment")
         learn_cfg = self.cfg_train["learn"]
         self.device = torch.device(device)
 
@@ -62,10 +76,20 @@ class PPO:
 
         # PPO components
         self.vec_env = vec_env
-        self.actor_critic = eval(self.model_cfg['actor_critic'])(self.state_space.shape, self.action_space.shape, self.init_noise_std,
-                                                                         self.model_cfg, self.encoder_cfg, self.cfg_env)
+        actor_critic_name = self.model_cfg["actor_critic"]
+        if actor_critic_name not in _MODEL_FUNCS:
+            raise ValueError(f"Unknown actor critic model: {actor_critic_name}")
+        actor_critic_class = _MODEL_FUNCS[actor_critic_name]
+        self.actor_critic = actor_critic_class(
+            self.state_space.shape,
+            self.action_space.shape,
+            self.init_noise_std,
+            self.model_cfg,
+            self.encoder_cfg,
+            self.cfg_env,
+        )
         self.actor_critic.to(self.device)
-        print(f"Encoder Name: {self.model_cfg['actor_critic']}")
+        print(f"Encoder Name: {actor_critic_name}")
 
         self.obs_device = self.device if self.encoder_cfg['name'] not in ['resnet18'] else 'cpu'
         self.storage = RolloutStorage(self.vec_env.num_envs, self.num_transitions_per_env, None, self.cfg_env['obs_dim']['prop'],
@@ -109,6 +133,40 @@ class PPO:
     def save(self, path):
         torch.save(self.actor_critic.state_dict(), path)
 
+    @staticmethod
+    def collect_terminal_metrics(metric_values, infos, env_ids):
+        for metric_name in _TACTILE_EPISODE_METRICS:
+            if metric_name not in infos:
+                continue
+            values = (
+                infos[metric_name][env_ids]
+                .reshape(-1)
+                .detach()
+                .cpu()
+                .tolist()
+            )
+            if metric_name == "first_contact_step":
+                values = [value for value in values if value >= 0]
+            metric_values[metric_name].extend(values)
+
+    @staticmethod
+    def print_terminal_metrics(metric_values, prefix=""):
+        available_metrics = [
+            metric_name
+            for metric_name, values in metric_values.items()
+            if values
+        ]
+        if not available_metrics:
+            return
+
+        if prefix:
+            print(prefix)
+        for metric_name in available_metrics:
+            label, scale = _TACTILE_EPISODE_METRICS[metric_name]
+            value = statistics.mean(metric_values[metric_name]) * scale
+            suffix = "%" if scale == 100.0 else ""
+            print(f"{label}: {value:.2f}{suffix}")
+
     def run(self, num_learning_iterations, log_interval=1):
         # current_obs_state = self.vec_env.reset()
         # current_states = self.vec_env.get_state()
@@ -122,6 +180,10 @@ class PPO:
             episode_length = []
             successes = []
             successes_times = []
+            episode_metrics = {
+                metric_name: []
+                for metric_name in _TACTILE_EPISODE_METRICS
+            }
             recoder = dict(images=[], tactiles=[])
             current_obs_state = self.vec_env.reset()
             while len(reward_sum) <= maxlen:
@@ -148,7 +210,18 @@ class PPO:
                     new_ids = (dones > 0).nonzero(as_tuple=False)
                     reward_sum.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
                     episode_length.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
-                    successes.extend(infos["goal_achieved"][new_ids][:, 0].cpu().numpy().tolist())
+                    success_key = (
+                        "successes"
+                        if "successes" in infos
+                        else "goal_achieved"
+                    )
+                    successes.extend(
+                        infos[success_key][new_ids]
+                        .reshape(-1).cpu().numpy().tolist()
+                    )
+                    self.collect_terminal_metrics(
+                        episode_metrics, infos, new_ids
+                    )
                     if self.enable_success_time:
                         successes_times.extend(success_time[new_ids][:, 0].cpu().numpy().tolist())
                     cur_reward_sum[new_ids] = 0
@@ -162,6 +235,13 @@ class PPO:
                         print("Mean success: {:.2f}".format(statistics.mean(successes) * 100))
                         if self.enable_success_time:
                             print("Mean success time: {:.2f}".format(statistics.mean(successes_times)))
+                        self.print_terminal_metrics(
+                            episode_metrics,
+                            prefix=(
+                                f"Tactile experiment: "
+                                f"{self.tactile_experiment}"
+                            ),
+                        )
                         # pickle.dump(recoder, open(f'./I&T{len(reward_sum)}.pkl', 'wb'))
                         recoder = dict(images=[], tactiles=[])
                 # print(f"sum of imges is {len(recoder['images'])}")
@@ -171,18 +251,26 @@ class PPO:
             lenbuffer = deque(maxlen=self.max_len)
             successbuffer = deque(maxlen=self.max_len)
             successes_time_buffer = deque(maxlen=self.max_len)
+            episode_metric_buffers = {
+                metric_name: deque(maxlen=self.max_len)
+                for metric_name in _TACTILE_EPISODE_METRICS
+            }
             # print(self.max_len)
             cur_reward_sum = torch.zeros(self.vec_env.num_envs, dtype=torch.float, device=self.device)
             cur_episode_length = torch.zeros(self.vec_env.num_envs, dtype=torch.float, device=self.device)
-            reward_sum = []
-            episode_length = []
-            successes = []
-            successes_times = []
             env_mean_success = 0.0
 
             for it in range(self.current_learning_iteration, num_learning_iterations):
                 start = time.time()
                 ep_infos = []
+                reward_sum = []
+                episode_length = []
+                successes = []
+                successes_times = []
+                episode_metrics = {
+                    metric_name: []
+                    for metric_name in _TACTILE_EPISODE_METRICS
+                }
 
                 # Rollout
                 for _ in range(self.num_transitions_per_env):
@@ -220,6 +308,9 @@ class PPO:
                         reward_sum.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
                         episode_length.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
                         successes.extend(infos['successes'][new_ids][:, 0].cpu().numpy().tolist())
+                        self.collect_terminal_metrics(
+                            episode_metrics, infos, new_ids
+                        )
                         if self.enable_success_time:
                             successes_times.extend(success_time[new_ids][:, 0].cpu().numpy().tolist())
                         # successes.extend(infos['env_mean_successes'][new_ids][:, 0].cpu().numpy().tolist())
@@ -240,6 +331,10 @@ class PPO:
                     successbuffer.extend(successes)
                     if self.enable_success_time:
                         successes_time_buffer.extend(successes_times)
+                    for metric_name, values in episode_metrics.items():
+                        episode_metric_buffers[metric_name].extend(
+                            values
+                        )
 
                 _, _, last_values, _, _, _, _ = self.actor_critic.act(current_obs_state)
                 stop = time.time()
@@ -274,6 +369,8 @@ class PPO:
         ep_string = f''
         if locs['ep_infos']:
             for key in locs['ep_infos'][0]:
+                if key in _TACTILE_EPISODE_METRICS:
+                    continue
                 infotensor = torch.tensor([], device=self.device)
                 for ep_info in locs['ep_infos']:
                     infotensor = torch.cat((infotensor, ep_info[key].to(self.device)))
@@ -295,6 +392,24 @@ class PPO:
             self.writer.add_scalar('Train/mean_success/time', statistics.mean(locs['successbuffer'])*100, self.tot_time)
             if self.enable_success_time:
                 self.writer.add_scalar('Train/mean_success_time', statistics.mean(locs['successes_time_buffer']), locs['it'])
+
+        tactile_string = ""
+        for metric_name, values in locs[
+            "episode_metric_buffers"
+        ].items():
+            if not values:
+                continue
+            label, scale = _TACTILE_EPISODE_METRICS[metric_name]
+            value = statistics.mean(values) * scale
+            self.writer.add_scalar(
+                "Tactile/" + metric_name,
+                value,
+                locs["it"],
+            )
+            suffix = "%" if scale == 100.0 else ""
+            tactile_string += (
+                f"{label + ':':>{pad}} {value:.2f}{suffix}\n"
+            )
 
         self.writer.add_scalar('Train2/mean_reward/step', locs['mean_reward'], locs['it'])
         self.writer.add_scalar('Train2/mean_episode_length/episode', locs['mean_trajectory_length'], locs['it'])
@@ -333,6 +448,12 @@ class PPO:
                           f"""{'Mean reward/step:':>{pad}} {locs['mean_reward']:.2f}\n"""
                           f"""{'Mean episode length/episode:':>{pad}} {locs['mean_trajectory_length']:.2f}\n""")
         log_string += (f"""{'env_mean_success':>{pad}} {locs['env_mean_success']:.4f}\n""")
+        if self.tactile_experiment:
+            log_string += (
+                f"{'Tactile experiment:':>{pad}} "
+                f"{self.tactile_experiment}\n"
+            )
+        log_string += tactile_string
         log_string += ep_string
         log_string += (f"""{'-' * width}\n"""
                        f"""{'Total timesteps:':>{pad}} {self.tot_timesteps}\n"""

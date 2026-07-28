@@ -4,7 +4,7 @@ clip_observations: 5.0
 clip_actions: 1.0
 
 policy: # only works for MlpPolicy right now
-  actor_critic: 'ActorCriticDexRep'
+  actor_critic: 'ActorCriticMultimodal'
   pi_hid_sizes: [1024, 1024, 512, 512]
   vf_hid_sizes: [1024, 1024, 512, 512]
   activation: elu # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
@@ -15,8 +15,7 @@ encoder: # None
   emb_dim: 128
   en_mode: patch
   f_ex_mode: null
-
-  bn_type: "part"
+  embedding_bn_momentum: 0.01
 
 learn:
 

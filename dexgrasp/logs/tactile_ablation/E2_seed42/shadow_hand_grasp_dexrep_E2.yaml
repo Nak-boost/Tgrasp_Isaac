@@ -15,49 +15,11 @@ env:
 
   random_time: True
   goal_cond: False
-  num_objs: 40
+  num_objs: 2
 
   object_code_dict:
-    - 'hammer'
-    - 'cubesmall'
-    - 'banana'
-    - 'stamp'
     - 'cubemedium'
-    - 'toruslarge'
-    - 'duck'
     - 'spherelarge'
-    - 'mouse'
-    - 'airplane'
-    - 'cylinderlarge'
-    - 'stapler'
-    - 'flute'
-    - 'piggybank'
-    - 'alarmclock'
-    - 'eyeglasses'
-    - 'gamecontroller'
-    - 'phone'
-    - 'torusmedium'
-    - 'knife'
-    - 'flashlight'
-    - 'train'
-    - 'spheremedium'
-    - 'headphones'
-    - 'cylindermedium'
-    - 'watch'
-    - 'stanfordbunny'
-    - 'teapot'
-    - 'cubelarge'
-    - 'cylindersmall'
-    - 'spheresmall'
-    - 'lightbulb'
-    - 'bowl'
-    - 'waterbottle'
-    - 'pyramidmedium'
-    - 'wineglass'
-    - 'pyramidlarge'
-    - 'cup'
-    - 'scissors'
-    - 'torussmall'
 
   stiffnessScale: 1.0
   forceLimitScale: 1.0
@@ -137,7 +99,7 @@ env:
     # E2: prop + current_touch + oracle_object
     # E3: prop + current_touch + voxel_map
     # E4: prop + current_touch + touch_history
-    experiment: "E1"
+    experiment: "E2"
 
     touch:
       # Raw Isaac Gym force-sensor units.

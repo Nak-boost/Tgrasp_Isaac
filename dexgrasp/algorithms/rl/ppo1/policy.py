@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 from torch.distributions import MultivariateNormal
 import torch.nn.functional as F
+from algorithms.rl.ppo1.multimodal_policy import ActorCriticMultimodal
 from dexgrasp.algorithms.rl.backbones.pre_model import Encoder_DexRep, Encoder_GeoDex, Encoder_GeoDex_cold, PointNetfeatTwoStream
 
 

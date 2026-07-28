@@ -13,7 +13,9 @@ env:
   enableDebugVis: False
   aggregateMode: 1
 
+  random_prior: True
   random_time: True
+  repose_z: True
   goal_cond: False
   num_objs: 40
 
@@ -85,128 +87,11 @@ env:
   fallPenalty: 0.0
 
   objectType: "pot" 
-  observationType: "tactile"
-
-  # obs_dim is rebuilt at runtime from tactile.experiment.
-  # The values below describe E1 and preserve prop as the first branch,
-  # which is required by PPO1 RolloutStorage.
+  observationType: "DexRep"
   obs_dim:
-    prop: 89
-    current_touch: 5
-
-  obs_encoders:
-    prop:
-      type: "mlp"
-      hidden_dims: [256, 128]
-      activation: "elu"
-
-    current_touch:
-      type: "touch"
-      hidden_dims: [32, 64]
-      activation: "elu"
-      # BN is applied to the 128-dimensional embedding, never to raw
-      # five-dimensional binary touch.
-      embedding_batch_norm: True
-
-    oracle_object:
-      type: "object"
-      hidden_dims: [128, 128]
-      activation: "elu"
-      embedding_batch_norm: True
-
-    voxel_map:
-      type: "voxel"
-      embedding_batch_norm: True
-
-    touch_history:
-      type: "history"
-      frame_hidden_dims: [128]
-      frame_embedding_dim: 128
-      recurrent_hidden_dim: 128
-      activation: "elu"
-      embedding_batch_norm: True
-
-  tactile:
-    enabled: True
-
-    # The loaded Shadow Hand has 22 joint DOFs. The policy still has
-    # 24 actions: 6 floating-base commands and 18 actuator commands.
-    hand_dof_count: 22
-
-    # E1: prop + current_touch
-    # E2: prop + current_touch + oracle_object
-    # E3: prop + current_touch + voxel_map
-    # E4: prop + current_touch + touch_history
-    experiment: "E1"
-
-    touch:
-      # Raw Isaac Gym force-sensor units.
-      # Hysteresis avoids rapid binary-touch switching near threshold.
-      on_threshold: 1.0
-      off_threshold: 0.5
-
-    reward:
-      # Shared by E1-E4. These terms use binary fingertip touch only.
-      # Applied once when at least one fingertip is touching.
-      contact: 0.05
-      # Applied for every touching fingertip beyond the first.
-      multi_contact: 0.02
-      # Applied for each fingertip that remains in contact.
-      contact_hold: 0.01
-      # Subtracted for each fingertip that loses contact.
-      contact_loss: 0.05
-      # Object-center height used only for the episode lift metric.
-      lift_height: 0.80
-
-    history:
-      # Each frame contains:
-      # fingertip positions (15), touch (5),
-      # q/qd/wrist proprioception (50), previous action (24).
-      length: 8
-      frame_dim: 94
-
-    voxel:
-      # Channel 0: potential object location.
-      #   1 = unknown or possible object location.
-      #   0 = recently explored free space.
-      #
-      # Channel 1: historical contact confidence.
-      #   1 = current contact; it decays toward 0.
-      #
-      # Channel 2: observation age.
-      #  -1 = never explored.
-      #   0 = observed during the current step.
-      #  (0, 1] = normalized time since the latest observation.
-      #
-      # An additional observed/free channel is unnecessary because
-      # potential already records free-space evidence and age=-1
-      # explicitly distinguishes unknown from explored voxels.
-      channels: 3
-      grid_size: [16, 16, 8]
-      lower: [-0.35, -0.35, 0.55]
-      upper: [0.35, 0.35, 0.95]
-      max_age: 64
-
-      # Contact evidence decays after contact disappears. Potential
-      # gradually returns toward 1 so stale free-space evidence does
-      # not permanently exclude a movable object from that location.
-      contact_decay: 0.95
-      potential_recovery: 0.005
-
-      # Fingertip trajectory sampling and voxel dilation.
-      sweep_samples: 8
-      contact_exclusion_samples: 1
-      free_radius_voxels: 0
-      contact_radius_voxels: 1
-
-      # Reject likely table contacts when writing object-contact evidence.
-      minimum_object_touch_z: 0.62
-
-  objectPositionRandomization:
-    enabled: True
-    xRange: [-0.15, 0.15]
-    yRange: [-0.15, 0.15]
-
+    prop: 207 # 211 #propriception
+    dexrep_sensor: 1080
+    dexrep_pnl: 1280
   handAgentIndex: "[[0, 1, 2, 3, 4, 5]]"
   asymmetric_observations: False
   successTolerance: 0.1
