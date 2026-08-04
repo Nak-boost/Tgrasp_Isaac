@@ -71,6 +71,8 @@ class SharedDexRepSensor:
     def __init__(self, args, device):
         import dexrep
         self.Sensor = dexrep.DexRep(args, device=device)
+        self.device = torch.device(device)
+        self.cached_global_pointnet_feature = None
         # self.task_name = args["task_name"]
 
         self.scaled_sampled_points = {}
@@ -120,7 +122,48 @@ class SharedDexRepSensor:
         self.obs_batch_obj_normals.append(
             np.copy(self.scaled_sampled_normals[env_obj_idx])
         )
+        self.cached_global_pointnet_feature = None
 
+    def prepare_batch_object_tensors(self):
+        if not torch.is_tensor(self.obs_batch_obj_points):
+            self.obs_batch_obj_points = torch.as_tensor(
+                np.asarray(self.obs_batch_obj_points),
+                dtype=torch.float32,
+                device=self.device,
+            )
+            self.obs_batch_obj_normals = torch.as_tensor(
+                np.asarray(self.obs_batch_obj_normals),
+                dtype=torch.float32,
+                device=self.device,
+            )
+
+    def get_batch_object_global_feature(self):
+        self.prepare_batch_object_tensors()
+
+        if self.cached_global_pointnet_feature is None:
+            if self.Sensor.PN.training:
+                raise RuntimeError(
+                    "The pretrained DexRep PointNet must remain in "
+                    "evaluation mode"
+                )
+            if any(
+                parameter.requires_grad
+                for parameter in self.Sensor.PN.parameters()
+            ):
+                raise RuntimeError(
+                    "The pretrained DexRep PointNet must be frozen"
+                )
+
+            with torch.no_grad():
+                self.cached_global_pointnet_feature = (
+                    self.Sensor.get_demon_pointnet_feature(
+                        self.obs_batch_obj_points,
+                        min_loc_idx=None,
+                        ifBatch=True,
+                    ).float()
+                )
+
+        return self.cached_global_pointnet_feature
 
     def get_perception_data(self,
                      body_xpose,
@@ -206,9 +249,7 @@ class SharedDexRepSensor:
         #     body_xpose_list.append(env_ob["body_xpose"])
         #     body_xquat_list.append(env_ob["body_xquat"])
         #     joints_site_list.append(env_ob["joints_site"])
-        if isinstance(self.obs_batch_obj_points, np.ndarray) or isinstance(self.obs_batch_obj_points, list):
-            self.obs_batch_obj_points = torch.tensor(np.array(self.obs_batch_obj_points), dtype=torch.float32).to(device)
-            self.obs_batch_obj_normals = torch.tensor(np.array(self.obs_batch_obj_normals), dtype=torch.float32).to(device)
+        self.prepare_batch_object_tensors()
 
         # st2 = time.time()
         dexrep_feat_cuda = self.get_batch_perception_data(

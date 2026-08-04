@@ -15,7 +15,6 @@ encoder: # None
   emb_dim: 128
   en_mode: patch
   f_ex_mode: null
-  embedding_bn_momentum: 0.01
 
 learn:
 
@@ -32,16 +31,16 @@ learn:
   # training params
   cliprange: 0.2
   ent_coef: 0
-  nsteps: 8
+  nsteps: 32
   noptepochs: 5
-  nminibatches: 4 # this is per agent
+  nminibatches: 8 # this is per agent
   max_grad_norm: 1
   optim_stepsize: 3.e-4 # 3e-4 is default for single agent training with constant schedule
   schedule: adaptive # could be adaptive or linear or fixed
   desired_kl: 0.016
-  gamma: 0.96
+  gamma: 0.99
   lam: 0.95
-  init_noise_std: 0.8
+  init_noise_std: 0.5
 
   log_interval: 1
   asymmetric: False

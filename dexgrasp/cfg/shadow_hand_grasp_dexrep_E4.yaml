@@ -25,7 +25,7 @@ env:
   forceLimitScale: 1.0
   useRelativeControl: False
   dofSpeedScale: 20.0
-  actionsMovingAverage: 1.0
+  actionsMovingAverage: 0.2
   controlFrequencyInv: 1 # 60 Hz
 
   startPositionNoise: 0.0
@@ -36,13 +36,14 @@ env:
   resetDofPosRandomInterval: 0.0
   resetDofVelRandomInterval: 0.0
 
-  distRewardScale: 20
-  transition_scale: 0.5
+  # Scale for signed hand-object distance progress.
+  distRewardScale: 10
+  transition_scale: 0.15
   orientation_scale: 0.1
   rotRewardScale: 1.0
   rotEps: 0.1
   actionPenaltyScale: -0.0002
-  reachGoalBonus: 250
+  reachGoalBonus: 40
   fallDistance: 0.4
   fallPenalty: 0.0
 
@@ -55,30 +56,36 @@ env:
   obs_dim:
     prop: 89
     current_touch: 5
+    relative_object_position: 3
 
   obs_encoders:
     prop:
       type: "mlp"
       hidden_dims: [256, 128]
       activation: "elu"
+      embedding_normalization: "layer_norm"
 
     current_touch:
       type: "touch"
       hidden_dims: [32, 64]
       activation: "elu"
-      # BN is applied to the 128-dimensional embedding, never to raw
-      # five-dimensional binary touch.
-      embedding_batch_norm: True
+      # Raw binary touch is not normalized; only its learned embedding is.
+      embedding_normalization: "layer_norm"
+
+    relative_object_position:
+      # Keep the scaled x/y/z displacement interpretable and bypass the
+      # common 128-dimensional learned embedding.
+      type: "identity"
 
     oracle_object:
       type: "object"
       hidden_dims: [128, 128]
       activation: "elu"
-      embedding_batch_norm: True
+      embedding_normalization: "layer_norm"
 
     voxel_map:
       type: "voxel"
-      embedding_batch_norm: True
+      embedding_normalization: "layer_norm"
 
     touch_history:
       type: "history"
@@ -86,7 +93,7 @@ env:
       frame_embedding_dim: 128
       recurrent_hidden_dim: 128
       activation: "elu"
-      embedding_batch_norm: True
+      embedding_normalization: "layer_norm"
 
   tactile:
     enabled: True
@@ -95,11 +102,17 @@ env:
     # 24 actions: 6 floating-base commands and 18 actuator commands.
     hand_dof_count: 22
 
-    # E1: prop + current_touch
-    # E2: prop + current_touch + oracle_object
-    # E3: prop + current_touch + voxel_map
-    # E4: prop + current_touch + touch_history
+    # Every experiment includes prop + current touch + optional relative position.
+    # E2 additionally uses object orientation/velocity and frozen PointNet.
+    # E3 adds voxel map; E4 adds touch history.
+    # E5 adds oracle state, frozen PointNet and DexRep interaction.
     experiment: "E4"
+
+    relative_object_position:
+      # (object world position - palm-reference world position) / scale.
+      # Disable by writing three zeros while retaining the same network shape.
+      enabled: True
+      scale: [0.35, 0.35, 0.40]
 
     touch:
       # Raw Isaac Gym force-sensor units.
@@ -108,17 +121,27 @@ env:
       off_threshold: 0.5
 
     reward:
-      # Shared by E1-E4. These terms use binary fingertip touch only.
-      # Applied once when at least one fingertip is touching.
-      contact: 0.05
-      # Applied for every touching fingertip beyond the first.
-      multi_contact: 0.02
-      # Applied for each fingertip that remains in contact.
+      # Shared by E1-E5. These terms use binary fingertip touch only.
+      # One-time reward for the first contact in an episode.
+      contact: 0.75
+      # One-time reward for each newly discovered additional finger.
+      multi_contact: 0.35
+      # Small per-step reward while at least two fingers are touching.
       contact_hold: 0.01
+      # Bound the total hold reward to 1.0 per episode.
+      contact_hold_max_steps: 100
       # Subtracted for each fingertip that loses contact.
       contact_loss: 0.05
-      # Object-center height used only for the episode lift metric.
-      lift_height: 0.80
+      # Scale for signed lift progress from zero to target.
+      # Paid only while at least two fingertips touch.
+      lift_progress: 15.0
+      # Required object height increase relative to reset height.
+      lift_target_height: 0.12
+
+      # Reach progress remains signed throughout the episode, but its
+      # influence decreases as the grasp gains contacts.
+      reach_single_contact_factor: 0.5
+      reach_multi_contact_factor: 0.1
 
     history:
       # Each frame contains:
@@ -159,7 +182,7 @@ env:
       sweep_samples: 8
       contact_exclusion_samples: 1
       free_radius_voxels: 0
-      contact_radius_voxels: 1
+      contact_radius_voxels: 0
 
       # Reject likely table contacts when writing object-contact evidence.
       minimum_object_touch_z: 0.62

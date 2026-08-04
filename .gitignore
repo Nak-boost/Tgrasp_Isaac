@@ -1,0 +1,25 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+
+# Models
+*.pt
+*.pth
+*.ckpt
+
+# Traning logs
+dexgrasp/logs/
+
+# Temporary files
+*.log
+*.tmp
+patch_tmp/
+
+# Python package build
+*.egg-info/
+build/
+dist/

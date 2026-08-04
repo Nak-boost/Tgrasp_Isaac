@@ -116,7 +116,7 @@ env:
     # E2 additionally uses object orientation/velocity and frozen PointNet.
     # E3 adds voxel map; E4 adds touch history.
     # E5 adds oracle state, frozen PointNet and DexRep interaction.
-    experiment: "E2"
+    experiment: "E5"
 
     oracle_geometry:
       pointnet_global_dim: 1024

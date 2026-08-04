@@ -52,17 +52,21 @@ def build_mlp(
 
 def build_embedding_normalizer(
     embedding_dim,
-    enabled,
-    momentum,
+    normalization,
 ):
-    if not enabled:
+    normalization = str(normalization).lower()
+    if normalization in {"none", "identity"}:
         return nn.Identity()
-    return nn.BatchNorm1d(
-        embedding_dim,
-        momentum=momentum,
-        affine=True,
-        track_running_stats=True,
+    if normalization == "layer_norm":
+        return nn.LayerNorm(embedding_dim)
+    raise ValueError(
+        f"Unsupported embedding normalization: {normalization}"
     )
+
+
+class IdentityObservationEncoder(nn.Module):
+    def forward(self, observations):
+        return observations
 
 
 class ProprioceptionEncoder(nn.Module):
@@ -72,6 +76,7 @@ class ProprioceptionEncoder(nn.Module):
         embedding_dim,
         hidden_dims,
         activation_name,
+        embedding_normalization,
     ):
         super().__init__()
         self.encoder = build_mlp(
@@ -80,9 +85,14 @@ class ProprioceptionEncoder(nn.Module):
             embedding_dim,
             activation_name,
         )
+        self.embedding_normalizer = build_embedding_normalizer(
+            embedding_dim,
+            embedding_normalization,
+        )
 
     def forward(self, observations):
-        return self.encoder(observations)
+        embedding = self.encoder(observations)
+        return self.embedding_normalizer(embedding)
 
 
 class TouchObservationEncoder(nn.Module):
@@ -92,13 +102,12 @@ class TouchObservationEncoder(nn.Module):
         embedding_dim,
         hidden_dims,
         activation_name,
-        embedding_batch_norm,
-        batch_norm_momentum,
+        embedding_normalization,
     ):
         super().__init__()
 
-        # Raw 0/1 touch values enter the MLP directly. BatchNorm is only
-        # applied after the touch pattern has been encoded.
+        # Raw 0/1 touch values enter the MLP directly. LayerNorm is
+        # applied only after the touch pattern has been encoded.
         self.encoder = build_mlp(
             input_dim,
             hidden_dims,
@@ -107,8 +116,7 @@ class TouchObservationEncoder(nn.Module):
         )
         self.embedding_normalizer = build_embedding_normalizer(
             embedding_dim,
-            embedding_batch_norm,
-            batch_norm_momentum,
+            embedding_normalization,
         )
 
     def forward(self, observations):
@@ -123,8 +131,7 @@ class ObjectObservationEncoder(nn.Module):
         embedding_dim,
         hidden_dims,
         activation_name,
-        embedding_batch_norm,
-        batch_norm_momentum,
+        embedding_normalization,
     ):
         super().__init__()
 
@@ -145,8 +152,7 @@ class ObjectObservationEncoder(nn.Module):
         initialize_linear_layers(self.encoder)
         self.embedding_normalizer = build_embedding_normalizer(
             embedding_dim,
-            embedding_batch_norm,
-            batch_norm_momentum,
+            embedding_normalization,
         )
 
     def forward(self, observations):
@@ -165,8 +171,7 @@ class HistoryObservationEncoder(nn.Module):
         frame_embedding_dim,
         recurrent_hidden_dim,
         activation_name,
-        embedding_batch_norm,
-        batch_norm_momentum,
+        embedding_normalization,
     ):
         super().__init__()
 
@@ -199,8 +204,7 @@ class HistoryObservationEncoder(nn.Module):
         nn.init.zeros_(self.projection.bias)
         self.embedding_normalizer = build_embedding_normalizer(
             embedding_dim,
-            embedding_batch_norm,
-            batch_norm_momentum,
+            embedding_normalization,
         )
 
     def forward(self, observations):
@@ -228,8 +232,7 @@ class VoxelObservationEncoder(nn.Module):
         embedding_dim,
         grid_size,
         channels,
-        embedding_batch_norm,
-        batch_norm_momentum,
+        embedding_normalization,
     ):
         super().__init__()
 
@@ -243,24 +246,41 @@ class VoxelObservationEncoder(nn.Module):
         self.channels = channels
         self.grid_size = tuple(grid_size)
         self.cnn = nn.Sequential(
-            nn.Conv3d(channels, 16, kernel_size=3, padding=1),
+            nn.Conv3d(
+                channels,
+                16,
+                kernel_size=3,
+                stride=2,
+                padding=1,
+            ),
             nn.GroupNorm(4, 16),
             nn.ELU(),
-            nn.Conv3d(16, 32, kernel_size=3, padding=1),
+            nn.Conv3d(
+                16,
+                32,
+                kernel_size=3,
+                stride=2,
+                padding=1,
+            ),
             nn.GroupNorm(8, 32),
             nn.ELU(),
-            nn.Conv3d(32, 32, kernel_size=3, padding=1),
-            nn.GroupNorm(8, 32),
+            nn.Conv3d(32, 64, kernel_size=3, padding=1),
+            nn.GroupNorm(8, 64),
             nn.ELU(),
-            nn.AdaptiveAvgPool3d(1),
         )
-        self.projection = nn.Linear(32, embedding_dim)
+        with torch.no_grad():
+            feature_shape = self.cnn(
+                torch.zeros(1, channels, *self.grid_size)
+            ).shape[1:]
+        self.projection = nn.Linear(
+            int(np.prod(feature_shape)),
+            embedding_dim,
+        )
         nn.init.orthogonal_(self.projection.weight, gain=np.sqrt(2))
         nn.init.zeros_(self.projection.bias)
         self.embedding_normalizer = build_embedding_normalizer(
             embedding_dim,
-            embedding_batch_norm,
-            batch_norm_momentum,
+            embedding_normalization,
         )
 
     def forward(self, observations):
@@ -271,6 +291,165 @@ class VoxelObservationEncoder(nn.Module):
         )
         voxel_features = self.cnn(voxel_map).flatten(1)
         embedding = self.projection(voxel_features)
+        return self.embedding_normalizer(embedding)
+
+
+class PointNetGlobalFeatureEncoder(nn.Module):
+    def __init__(
+        self,
+        input_dim,
+        embedding_dim,
+        hidden_dims,
+        activation_name,
+        embedding_normalization,
+    ):
+        super().__init__()
+
+        self.input_normalizer = nn.LayerNorm(input_dim)
+        self.encoder = build_mlp(
+            input_dim,
+            hidden_dims,
+            embedding_dim,
+            activation_name,
+        )
+        self.embedding_normalizer = build_embedding_normalizer(
+            embedding_dim,
+            embedding_normalization,
+        )
+
+    def forward(self, observations):
+        normalized_features = self.input_normalizer(observations)
+        embedding = self.encoder(normalized_features)
+        return self.embedding_normalizer(embedding)
+
+
+class DexRepInteractionEncoder(nn.Module):
+    def __init__(
+        self,
+        input_dim,
+        embedding_dim,
+        distance_dim,
+        occupancy_grid_size,
+        keypoint_count,
+        local_feature_dim,
+        embedding_normalization,
+    ):
+        super().__init__()
+
+        self.distance_dim = distance_dim
+        self.occupancy_grid_size = tuple(occupancy_grid_size)
+        self.occupancy_dim = int(
+            np.prod(self.occupancy_grid_size)
+        )
+        self.sensor_dim = self.distance_dim + self.occupancy_dim
+        self.keypoint_count = keypoint_count
+        self.local_feature_dim = local_feature_dim
+        self.local_dim = (
+            self.keypoint_count * self.local_feature_dim
+        )
+
+        expected_dim = self.sensor_dim + self.local_dim
+        if input_dim != expected_dim:
+            raise ValueError(
+                f"DexRep interaction dimension is {input_dim}, "
+                f"expected {self.sensor_dim} + {self.local_dim}"
+            )
+
+        self.distance_encoder = build_mlp(
+            self.distance_dim,
+            [128],
+            64,
+            "elu",
+        )
+        self.occupancy_encoder = nn.Sequential(
+            nn.Conv3d(1, 8, kernel_size=3, padding=1),
+            nn.GroupNorm(2, 8),
+            nn.ELU(),
+            nn.Conv3d(
+                8,
+                16,
+                kernel_size=3,
+                stride=2,
+                padding=1,
+            ),
+            nn.GroupNorm(4, 16),
+            nn.ELU(),
+            nn.Conv3d(16, 32, kernel_size=3, padding=1),
+            nn.GroupNorm(8, 32),
+            nn.ELU(),
+            nn.AdaptiveAvgPool3d(1),
+        )
+        self.local_point_encoder = build_mlp(
+            self.local_feature_dim,
+            [128],
+            128,
+            "elu",
+        )
+        self.local_projection = build_mlp(
+            256,
+            [128],
+            128,
+            "elu",
+        )
+        self.fusion = build_mlp(
+            224,
+            [256],
+            embedding_dim,
+            "elu",
+        )
+        self.embedding_normalizer = build_embedding_normalizer(
+            embedding_dim,
+            embedding_normalization,
+        )
+
+    def forward(self, observations):
+        distance = observations[:, :self.distance_dim]
+        occupancy_end = self.sensor_dim
+        occupancy = observations[
+            :, self.distance_dim:occupancy_end
+        ].reshape(
+            observations.shape[0],
+            1,
+            *self.occupancy_grid_size,
+        )
+        local_features = observations[
+            :, occupancy_end:
+        ].reshape(
+            observations.shape[0],
+            self.keypoint_count,
+            self.local_feature_dim,
+        )
+
+        distance_embedding = self.distance_encoder(distance)
+        occupancy_embedding = self.occupancy_encoder(
+            occupancy
+        ).flatten(1)
+
+        encoded_local_points = self.local_point_encoder(
+            local_features.reshape(
+                -1, self.local_feature_dim
+            )
+        ).reshape(
+            observations.shape[0],
+            self.keypoint_count,
+            -1,
+        )
+        local_max = encoded_local_points.max(dim=1).values
+        local_mean = encoded_local_points.mean(dim=1)
+        local_embedding = self.local_projection(
+            torch.cat((local_max, local_mean), dim=1)
+        )
+
+        embedding = self.fusion(
+            torch.cat(
+                (
+                    distance_embedding,
+                    occupancy_embedding,
+                    local_embedding,
+                ),
+                dim=1,
+            )
+        )
         return self.embedding_normalizer(embedding)
 
 
@@ -301,16 +480,17 @@ class ActorCriticMultimodal(nn.Module):
 
         self.prop_dim = self.obs_dims["prop"]
         self.embedding_dim = encoder_cfg.get("emb_dim", 128)
-        self.embedding_bn_momentum = encoder_cfg.get(
-            "embedding_bn_momentum", 0.01
-        )
 
         encoder_specs = env_cfg.get("obs_encoders", {})
         tactile_cfg = env_cfg.get("tactile", {})
         voxel_cfg = env_cfg.get("tactile", {}).get("voxel", {})
         history_cfg = tactile_cfg.get("history", {})
+        geometry_cfg = tactile_cfg.get(
+            "oracle_geometry", {}
+        )
 
         self.branch_encoders = nn.ModuleDict()
+        self.branch_output_dims = {}
         for branch_name, branch_dim in self.obs_dims.items():
             encoder_spec = encoder_specs.get(
                 branch_name,
@@ -327,8 +507,8 @@ class ActorCriticMultimodal(nn.Module):
                 encoder_spec = {"type": encoder_spec}
 
             encoder_type = encoder_spec.get("type", "mlp")
-            embedding_batch_norm = encoder_spec.get(
-                "embedding_batch_norm", False
+            embedding_normalization = encoder_spec.get(
+                "embedding_normalization", "none"
             )
 
             if encoder_type == "voxel":
@@ -337,8 +517,42 @@ class ActorCriticMultimodal(nn.Module):
                     embedding_dim=self.embedding_dim,
                     grid_size=voxel_cfg["grid_size"],
                     channels=voxel_cfg.get("channels", 4),
-                    embedding_batch_norm=embedding_batch_norm,
-                    batch_norm_momentum=self.embedding_bn_momentum,
+                    embedding_normalization=embedding_normalization,
+                )
+            elif encoder_type == "pointnet_global":
+                self.branch_encoders[branch_name] = (
+                    PointNetGlobalFeatureEncoder(
+                        input_dim=branch_dim,
+                        embedding_dim=self.embedding_dim,
+                        hidden_dims=encoder_spec.get(
+                            "hidden_dims", [512, 256]
+                        ),
+                        activation_name=encoder_spec.get(
+                            "activation", "elu"
+                        ),
+                        embedding_normalization=embedding_normalization,
+                    )
+                )
+            elif encoder_type == "dexrep_interaction":
+                self.branch_encoders[branch_name] = (
+                    DexRepInteractionEncoder(
+                        input_dim=branch_dim,
+                        embedding_dim=self.embedding_dim,
+                        distance_dim=geometry_cfg.get(
+                            "dexrep_distance_dim", 80
+                        ),
+                        occupancy_grid_size=geometry_cfg.get(
+                            "dexrep_occupancy_grid_size",
+                            [10, 10, 10],
+                        ),
+                        keypoint_count=geometry_cfg.get(
+                            "dexrep_keypoint_count", 20
+                        ),
+                        local_feature_dim=geometry_cfg.get(
+                            "dexrep_local_feature_dim", 64
+                        ),
+                        embedding_normalization=embedding_normalization,
+                    )
                 )
             elif encoder_type == "touch":
                 self.branch_encoders[branch_name] = (
@@ -351,8 +565,7 @@ class ActorCriticMultimodal(nn.Module):
                         activation_name=encoder_spec.get(
                             "activation", "elu"
                         ),
-                        embedding_batch_norm=embedding_batch_norm,
-                        batch_norm_momentum=self.embedding_bn_momentum,
+                        embedding_normalization=embedding_normalization,
                     )
                 )
             elif encoder_type == "object":
@@ -366,8 +579,7 @@ class ActorCriticMultimodal(nn.Module):
                         activation_name=encoder_spec.get(
                             "activation", "elu"
                         ),
-                        embedding_batch_norm=embedding_batch_norm,
-                        batch_norm_momentum=self.embedding_bn_momentum,
+                        embedding_normalization=embedding_normalization,
                     )
                 )
             elif encoder_type == "history":
@@ -389,9 +601,12 @@ class ActorCriticMultimodal(nn.Module):
                         activation_name=encoder_spec.get(
                             "activation", "elu"
                         ),
-                        embedding_batch_norm=embedding_batch_norm,
-                        batch_norm_momentum=self.embedding_bn_momentum,
+                        embedding_normalization=embedding_normalization,
                     )
+                )
+            elif encoder_type == "identity":
+                self.branch_encoders[branch_name] = (
+                    IdentityObservationEncoder()
                 )
             elif encoder_type == "mlp":
                 self.branch_encoders[branch_name] = (
@@ -404,6 +619,9 @@ class ActorCriticMultimodal(nn.Module):
                         activation_name=encoder_spec.get(
                             "activation", "elu"
                         ),
+                        embedding_normalization=(
+                            embedding_normalization
+                        ),
                     )
                 )
             else:
@@ -412,6 +630,12 @@ class ActorCriticMultimodal(nn.Module):
                     f"for branch '{branch_name}'"
                 )
 
+            self.branch_output_dims[branch_name] = (
+                branch_dim
+                if encoder_type == "identity"
+                else self.embedding_dim
+            )
+
         actor_hidden_dims = model_cfg.get(
             "pi_hid_sizes", [256, 256, 256]
         )
@@ -419,7 +643,7 @@ class ActorCriticMultimodal(nn.Module):
             "vf_hid_sizes", [256, 256, 256]
         )
         activation_name = model_cfg.get("activation", "elu")
-        joint_embedding_dim = len(self.obs_dims) * self.embedding_dim
+        joint_embedding_dim = sum(self.branch_output_dims.values())
 
         self.actor = self._build_mlp(
             input_dim=joint_embedding_dim,
@@ -493,10 +717,6 @@ class ActorCriticMultimodal(nn.Module):
 
         return torch.cat(embeddings, dim=1)
 
-    def set_normalizers_training(self, training):
-        for module in self.branch_encoders.modules():
-            if isinstance(module, nn.BatchNorm1d):
-                module.train(training)
 
     def action_distribution(self, actions_mean):
         action_std = self.log_std.exp()
@@ -508,7 +728,6 @@ class ActorCriticMultimodal(nn.Module):
 
     @torch.no_grad()
     def act(self, observations):
-        self.set_normalizers_training(False)
         joint_embedding = self.encode_observations(observations)
         actions_mean = self.actor(joint_embedding)
         distribution = self.action_distribution(actions_mean)
@@ -528,12 +747,10 @@ class ActorCriticMultimodal(nn.Module):
 
     @torch.no_grad()
     def act_inference(self, observations):
-        self.set_normalizers_training(False)
         joint_embedding = self.encode_observations(observations)
         return self.actor(joint_embedding)
 
     def evaluate(self, obs_features, state, actions):
-        self.set_normalizers_training(True)
         observations = torch.cat((state, obs_features), dim=1)
         joint_embedding = self.encode_observations(observations)
         actions_mean = self.actor(joint_embedding)
