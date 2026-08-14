@@ -55,7 +55,7 @@ env:
   # which is required by PPO1 RolloutStorage.
   obs_dim:
     prop: 89
-    current_touch: 5
+    current_touch: 14
     relative_object_position: 3
 
   obs_encoders:
@@ -133,74 +133,61 @@ env:
       scale: [0.35, 0.35, 0.40]
 
     touch:
+      # Five distal, four middle, four proximal and one palm sensor.
+      layout: "link14"
       # Raw Isaac Gym force-sensor units.
       # Hysteresis avoids rapid binary-touch switching near threshold.
       on_threshold: 1.0
       off_threshold: 0.5
 
     reward:
-      # Shared by E1-E5. These terms use binary fingertip touch only.
-      # One-time reward for the first contact in an episode.
-      contact: 0.75
-      # One-time reward for each newly discovered additional finger.
-      multi_contact: 0.35
-      # Small per-step reward while at least two fingers are touching.
-      contact_hold: 0.01
-      # Bound the total hold reward to 1.0 per episode.
-      contact_hold_max_steps: 100
-      # Subtracted for each fingertip that loses contact.
-      contact_loss: 0.05
-      # Scale for signed lift progress from zero to target.
-      # Paid only while at least two fingertips touch.
-      lift_progress: 15.0
+      # Shared by E1-E5. All terms are dense and use five-finger
+      # contact aggregation rather than counting individual link sensors.
+      # Per-step reward for each additional finger that remains in
+      # contact for at least two consecutive simulation steps.
+      multi_contact_hold: 0.02
+      # Per-step dense height reward. At the 12 cm target this term is 0.25.
+      lift_height: 0.25
       # Required object height increase relative to reset height.
       lift_target_height: 0.12
+      # Additional per-step reward while the object remains above target.
+      lift_hold: 0.5
+      # Reset after this many consecutive steps above target.
+      lift_hold_steps: 10
 
       # Reach progress remains signed throughout the episode, but its
-      # influence decreases as the grasp gains contacts.
+      # influence decreases as the grasp gains stable contacts.
       reach_single_contact_factor: 0.5
       reach_multi_contact_factor: 0.1
 
     history:
       # Each frame contains:
-      # fingertip positions (15), touch (5),
+      # tactile-link positions (42), touch (14),
       # q/qd/wrist proprioception (50), previous action (24).
       length: 8
-      frame_dim: 94
+      frame_dim: 130
 
     voxel:
-      # Channel 0: potential object location.
-      #   1 = unknown or possible object location.
-      #   0 = recently explored free space.
-      #
-      # Channel 1: historical contact confidence.
-      #   1 = current contact; it decays toward 0.
-      #
-      # Channel 2: observation age.
-      #  -1 = never explored.
-      #   0 = observed during the current step.
-      #  (0, 1] = normalized time since the latest observation.
-      #
-      # An additional observed/free channel is unnecessary because
-      # potential already records free-space evidence and age=-1
-      # explicitly distinguishes unknown from explored voxels.
+      # Channel 0: free-space evidence.
+      # Channel 1: object-contact evidence.
+      # Channel 2: confidence/recency of either kind of evidence.
+      # Unknown and expired voxels approach [0, 0, 0].
       channels: 3
       grid_size: [16, 16, 8]
       lower: [-0.35, -0.35, 0.55]
       upper: [0.35, 0.35, 0.95]
-      max_age: 64
 
-      # Contact evidence decays after contact disappears. Potential
-      # gradually returns toward 1 so stale free-space evidence does
-      # not permanently exclude a movable object from that location.
+      # Old evidence decays because the object can move after contact.
+      free_decay: 0.98
       contact_decay: 0.95
-      potential_recovery: 0.005
+      confidence_decay: 0.98
 
-      # Fingertip trajectory sampling and voxel dilation.
+      # Sample all 14 tactile-link trajectories. Free evidence remains
+      # conservative; contact is splatted to a small spherical neighborhood.
       sweep_samples: 8
       contact_exclusion_samples: 1
       free_radius_voxels: 0
-      contact_radius_voxels: 0
+      contact_radius_voxels: 1
 
       # Reject likely table contacts when writing object-contact evidence.
       minimum_object_touch_z: 0.62

@@ -18,6 +18,7 @@ dexgrasp/logs/
 *.log
 *.tmp
 patch_tmp/
+Papers/
 
 # Python package build
 *.egg-info/
