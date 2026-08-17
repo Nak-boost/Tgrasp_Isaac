@@ -38,7 +38,7 @@ env:
   resetDofVelRandomInterval: 0.0
 
   # Scale for signed hand-object distance progress.
-  distRewardScale: 10
+  distRewardScale: 2
   transition_scale: 0.15
   orientation_scale: 0.1
   rotRewardScale: 1.0
@@ -118,7 +118,7 @@ env:
     touch:
       # Five distal, four middle, four proximal and one palm sensor.
       layout: "link14"
-      # Raw Isaac Gym force-sensor units.
+      # Net rigid-body contact-force units (N).
       # Hysteresis avoids rapid binary-touch switching near threshold.
       on_threshold: 1.0
       off_threshold: 0.5
@@ -129,7 +129,9 @@ env:
       # Per-step reward for each additional finger that remains in
       # contact for at least two consecutive simulation steps.
       multi_contact_hold: 0.02
-      # Per-step dense height reward. At the 12 cm target this term is 0.25.
+      # Per-step dense height reward, paid only while at least two
+      # different fingers maintain contact across two simulation steps.
+      # At the 12 cm target this term is 0.25.
       lift_height: 0.25
       # Required object height increase relative to reset height.
       lift_target_height: 0.12
@@ -138,10 +140,13 @@ env:
       # Reset after this many consecutive steps above target.
       lift_hold_steps: 10
 
-      # Reach progress remains signed throughout the episode, but its
-      # influence decreases as the grasp gains stable contacts.
-      reach_single_contact_factor: 0.5
-      reach_multi_contact_factor: 0.1
+      # Signed reach progress uses the palm and the mean distance of
+      # distal, middle and proximal finger-link keypoints. It is not
+      # reduced after contact.
+      reach_palm_weight: 0.5
+      reach_distal_weight: 1.0
+      reach_middle_weight: 0.25
+      reach_proximal_weight: 0.0
 
     history:
       # Each frame contains:
@@ -305,6 +310,8 @@ sim:
   physx:
     num_threads: 4
     solver_type: 1  # 0: pgs, 1: tgs
+    # Required by net_contact_force_tensor; collect every substep.
+    contact_collection: 2
     num_position_iterations: 8 # 8 bottle
     num_velocity_iterations: 0
     contact_offset: 0.002
