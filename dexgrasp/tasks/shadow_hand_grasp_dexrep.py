@@ -78,7 +78,7 @@ class ShadowHandGraspDexRep(BaseTask):
             "robot0:thdistal",
         ]
         touch_layout = self.tactile_cfg.get("touch", {}).get(
-            "layout", "link14" if self.tactile_enabled else "fingertip5"
+            "layout", "pad14" if self.tactile_enabled else "fingertip5"
         )
         touch_layouts = {
             "fingertip5": list(self.fingertips),
@@ -94,6 +94,22 @@ class ShadowHandGraspDexRep(BaseTask):
                 "robot0:lfproximal",
                 "robot0:palm",
             ],
+            "pad14": [
+                "robot0:ffdistal_sensor",
+                "robot0:mfdistal_sensor",
+                "robot0:rfdistal_sensor",
+                "robot0:lfdistal_sensor",
+                "robot0:thdistal_sensor",
+                "robot0:ffmiddle_sensor",
+                "robot0:mfmiddle_sensor",
+                "robot0:rfmiddle_sensor",
+                "robot0:lfmiddle_sensor",
+                "robot0:ffproximal_sensor",
+                "robot0:mfproximal_sensor",
+                "robot0:rfproximal_sensor",
+                "robot0:lfproximal_sensor",
+                "robot0:palm_sensor",
+            ],
         }
         if touch_layout not in touch_layouts:
             raise ValueError(
@@ -102,6 +118,22 @@ class ShadowHandGraspDexRep(BaseTask):
             )
         self.touch_layout = touch_layout
         self.touch_sensor_bodies = touch_layouts[touch_layout]
+        regular_finger_inward_normal = [0.0, 1.0, 0.0]
+        thumb_inward_normal = [1.0, 0.0, 0.0]
+        self.touch_sensor_local_inward_normals_values = (
+            [regular_finger_inward_normal] * 4
+            + [thumb_inward_normal]
+            + [regular_finger_inward_normal] * 9
+        )[:len(self.touch_sensor_bodies)]
+        touch_cfg = self.tactile_cfg.get("touch", {})
+        self.touch_force_mode = touch_cfg.get(
+            "force_mode",
+            "normal" if touch_layout == "pad14" else "norm",
+        )
+        if self.touch_force_mode not in {"normal", "norm"}:
+            raise ValueError(
+                "tactile.touch.force_mode must be normal or norm"
+            )
         self.num_fingertips = len(self.fingertips)
         self.num_touch_sensors = len(self.touch_sensor_bodies)
         finger_prefixes = (
@@ -348,6 +380,11 @@ class ShadowHandGraspDexRep(BaseTask):
                 device=self.device,
                 dtype=torch.float,
             ).view(1, 3)
+            self.touch_sensor_local_inward_normals = to_torch(
+                self.touch_sensor_local_inward_normals_values,
+                device=self.device,
+                dtype=torch.float,
+            )
 
             if (
                 self.num_shadow_hand_dofs
@@ -686,6 +723,16 @@ class ShadowHandGraspDexRep(BaseTask):
                     for o in hand_rigid_body_index[m]:
                         self.gym.set_rigid_body_color(env_ptr, shadow_hand_actor, o, gymapi.MESH_VISUAL,
                                                 gymapi.Vec3(*hand_color))
+            if self.tactile_enabled:
+                sensor_color = gymapi.Vec3(0.95, 0.35, 0.10)
+                for touch_sensor_handle in self.touch_sensor_handles:
+                    self.gym.set_rigid_body_color(
+                        env_ptr,
+                        shadow_hand_actor,
+                        touch_sensor_handle,
+                        gymapi.MESH_VISUAL,
+                        sensor_color,
+                    )
             # create fingertip force-torque sensors
             # if self.obs_type == "full_state" or self.asymmetric_obs:
             self.gym.enable_actor_dof_force_sensors(env_ptr, shadow_hand_actor)
@@ -856,11 +903,18 @@ class ShadowHandGraspDexRep(BaseTask):
         if "asset" in self.cfg["env"]:
             asset_root = self.cfg["env"]["asset"].get("assetRoot", asset_root)
             shadow_hand_asset_file = self.cfg["env"]["asset"].get("assetFileName", shadow_hand_asset_file)
+        if self.tactile_enabled:
+            shadow_hand_asset_file = self.tactile_cfg.get(
+                "touch", {}
+            ).get(
+                "asset_file",
+                "mjcf/open_ai_assets/hand/shadow_hand_tactile.xml",
+            )
         # load shadow hand_ asset
         asset_options = gymapi.AssetOptions()
         asset_options.flip_visual_attachments = False
         asset_options.fix_base_link = False
-        asset_options.collapse_fixed_joints = True
+        asset_options.collapse_fixed_joints = not self.tactile_enabled
         asset_options.disable_gravity = True
         asset_options.thickness = 0.001
         asset_options.angular_damping = 100
@@ -1254,7 +1308,29 @@ class ShadowHandGraspDexRep(BaseTask):
         force_vectors = self.net_contact_force_tensor[
             :, self.touch_sensor_handles, :
         ]
-        force_norm = torch.norm(force_vectors, p=2, dim=-1)
+        if self.touch_force_mode == "normal":
+            sensor_rotations = self.touch_sensor_state[:, :, 3:7]
+            local_inward_normals = (
+                self.touch_sensor_local_inward_normals
+                .unsqueeze(0)
+                .expand(self.num_envs, -1, -1)
+            )
+            world_inward_normals = quat_apply(
+                sensor_rotations.reshape(-1, 4),
+                local_inward_normals.reshape(-1, 3),
+            ).view(self.num_envs, self.num_touch_sensors, 3)
+            touch_force = torch.clamp(
+                torch.sum(
+                    force_vectors * world_inward_normals,
+                    dim=-1,
+                ),
+                min=0.0,
+            )
+        else:
+            touch_force = torch.norm(
+                force_vectors, p=2, dim=-1
+            )
+        self.touch_force = touch_force
 
         touch_on_threshold = self.tactile_cfg["touch"].get(
             "on_threshold", 1.0
@@ -1270,8 +1346,8 @@ class ShadowHandGraspDexRep(BaseTask):
             )
 
         was_touching = self.binary_touch > 0.5
-        remain_touching = force_norm >= touch_off_threshold
-        begin_touching = force_norm >= touch_on_threshold
+        remain_touching = touch_force >= touch_off_threshold
+        begin_touching = touch_force >= touch_on_threshold
 
         self.binary_touch = torch.where(
             was_touching,
@@ -1910,8 +1986,8 @@ class ShadowHandGraspDexRep(BaseTask):
             self.cur_targets[:, self.actuated_dof_indices] = tensor_clamp(self.cur_targets[:, self.actuated_dof_indices],self.shadow_hand_dof_lower_limits[self.actuated_dof_indices],self.shadow_hand_dof_upper_limits[self.actuated_dof_indices])
 
 
-            self.apply_forces[:, 1, :] = self.actions[:, 0:3] * self.dt * self.transition_scale * 100000
-            self.apply_torque[:, 1, :] = self.actions[:, 3:6] * self.dt * self.orientation_scale * 1000
+            self.apply_forces[:, self.hand_body_idx_dict["palm"], :] = self.actions[:, 0:3] * self.dt * self.transition_scale * 100000
+            self.apply_torque[:, self.hand_body_idx_dict["palm"], :] = self.actions[:, 3:6] * self.dt * self.orientation_scale * 1000
 
             self.gym.apply_rigid_body_force_tensors(self.sim, gymtorch.unwrap_tensor(self.apply_forces),
                                                     gymtorch.unwrap_tensor(self.apply_torque), gymapi.ENV_SPACE)

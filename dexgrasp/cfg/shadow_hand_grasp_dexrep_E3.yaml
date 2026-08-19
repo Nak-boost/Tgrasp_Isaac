@@ -116,9 +116,12 @@ env:
       scale: [0.35, 0.35, 0.40]
 
     touch:
-      # Five distal, four middle, four proximal and one palm sensor.
-      layout: "link14"
-      # Net rigid-body contact-force units (N).
+      # Five distal, four middle, four proximal and one palm-side pad.
+      layout: "pad14"
+      asset_file: "mjcf/open_ai_assets/hand/shadow_hand_tactile.xml"
+      # Project each pad contact force onto its inward surface normal.
+      force_mode: "normal"
+      # Compressive normal-force units (N).
       # Hysteresis avoids rapid binary-touch switching near threshold.
       on_threshold: 1.0
       off_threshold: 0.5
