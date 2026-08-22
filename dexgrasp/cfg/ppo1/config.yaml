@@ -42,5 +42,18 @@ learn:
   lam: 0.95
   init_noise_std: 0.5
 
+  # Local action supervision: after a valid grasp, teach only the
+  # hand-base +Z action. PPO still executes its own sampled actions.
+  upward_action_supervision:
+    enabled: True
+    action_index: 2
+    target_action: 0.05
+    loss_coef: 0.2
+    # Keep full supervision until 25% of the latest 200 completed
+    # episodes reach the lift target, then decay once over 2000 iterations.
+    trigger_lift_rate: 0.25
+    success_window: 200
+    decay_iterations: 2000
+
   log_interval: 1
   asymmetric: False

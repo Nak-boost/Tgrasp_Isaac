@@ -39,13 +39,29 @@ class RolloutStorage:
         self.advantages = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
         self.mu = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
         self.sigma = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
+        self.upward_action_supervision_masks = torch.zeros(
+            num_transitions_per_env, num_envs, 1, device=self.device
+        )
 
         self.num_transitions_per_env = num_transitions_per_env
         self.num_envs = num_envs
 
         self.step = 0
 
-    def add_transitions(self, states, observations, actions, rewards, dones, values, actions_log_prob, mu, sigma, obs_device):
+    def add_transitions(
+        self,
+        states,
+        observations,
+        actions,
+        rewards,
+        dones,
+        values,
+        actions_log_prob,
+        mu,
+        sigma,
+        obs_device,
+        upward_action_supervision_mask=None,
+    ):
         if self.step >= self.num_transitions_per_env:
             raise AssertionError("Rollout buffer overflow")
         if observations is not None:
@@ -62,6 +78,12 @@ class RolloutStorage:
         self.actions_log_prob[self.step].copy_(actions_log_prob.view(-1, 1))
         self.mu[self.step].copy_(mu)
         self.sigma[self.step].copy_(sigma)
+        if upward_action_supervision_mask is None:
+            self.upward_action_supervision_masks[self.step].zero_()
+        else:
+            self.upward_action_supervision_masks[self.step].copy_(
+                upward_action_supervision_mask.view(-1, 1).to(self.device)
+            )
 
         self.step += 1
 

@@ -149,6 +149,9 @@ env:
       # Per-step reward for each additional finger that remains in
       # contact for at least two consecutive simulation steps.
       multi_contact_hold: 0.02
+      # A lift-ready grasp requires thumb + any other finger for this
+      # many consecutive control steps.
+      valid_grasp_steps: 3
       # Per-step dense height reward, paid only while at least two
       # different fingers maintain contact across two simulation steps.
       # At the 12 cm target this term is 0.25.
