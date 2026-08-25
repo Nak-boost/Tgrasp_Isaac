@@ -47,7 +47,7 @@ learn:
   upward_action_supervision:
     enabled: True
     action_index: 2
-    target_action: 0.05
+    target_action: 0.30
     loss_coef: 0.2
     # Keep full supervision until 25% of the latest 200 completed
     # episodes reach the lift target, then decay once over 2000 iterations.
