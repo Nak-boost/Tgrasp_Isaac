@@ -130,9 +130,17 @@ class ShadowHandGraspDexRep(BaseTask):
             "force_mode",
             "normal" if touch_layout == "pad14" else "norm",
         )
+        self.touch_minimum_height_above_table = float(
+            touch_cfg.get("minimum_height_above_table", 0.005)
+        )
         if self.touch_force_mode not in {"normal", "norm"}:
             raise ValueError(
                 "tactile.touch.force_mode must be normal or norm"
+            )
+        if self.touch_minimum_height_above_table < 0.0:
+            raise ValueError(
+                "tactile.touch.minimum_height_above_table must be "
+                "non-negative"
             )
         self.num_fingertips = len(self.fingertips)
         self.num_touch_sensors = len(self.touch_sensor_bodies)
@@ -410,10 +418,29 @@ class ShadowHandGraspDexRep(BaseTask):
             self.previous_binary_touch = torch.zeros_like(
                 self.binary_touch
             )
+            self.consecutive_valid_grasp_steps = torch.zeros(
+                self.num_envs,
+                device=self.device,
+                dtype=torch.long,
+            )
+            self.valid_grasp_mask = torch.zeros(
+                self.num_envs,
+                device=self.device,
+                dtype=torch.bool,
+            )
 
             touch_reward_cfg = self.tactile_cfg.get("reward", {})
             self.touch_multi_contact_hold_reward_scale = (
                 touch_reward_cfg.get("multi_contact_hold", 0.02)
+            )
+            self.valid_grasp_required_steps = int(
+                touch_reward_cfg.get("valid_grasp_steps", 3)
+            )
+            self.touch_upward_action_reward_scale = float(
+                touch_reward_cfg.get("upward_action", 0.075)
+            )
+            self.touch_upward_action_reward_saturation = float(
+                touch_reward_cfg.get("upward_action_saturation", 0.3)
             )
             self.touch_lift_height_reward_scale = touch_reward_cfg.get(
                 "lift_height", 0.25
@@ -442,6 +469,14 @@ class ShadowHandGraspDexRep(BaseTask):
             if self.touch_lift_hold_steps < 1:
                 raise ValueError(
                     "tactile.reward.lift_hold_steps must be positive"
+                )
+            if self.valid_grasp_required_steps < 1:
+                raise ValueError(
+                    "tactile.reward.valid_grasp_steps must be positive"
+                )
+            if self.touch_upward_action_reward_saturation <= 0.0:
+                raise ValueError(
+                    "tactile.reward.upward_action_saturation must be positive"
                 )
 
             self.episode_had_contact = torch.zeros(
@@ -618,6 +653,7 @@ class ShadowHandGraspDexRep(BaseTask):
         table_pose = gymapi.Transform()
         table_pose.p = gymapi.Vec3(0.0, 0.0, 0.5 * table_dims.z)
         table_pose.r = gymapi.Quat().from_euler_zyx(-0., 0, 0)
+        self.table_top_z = table_pose.p.z + 0.5 * table_dims.z
 
         # compute aggregate size
         # max_agg_bodies = self.num_shadow_hand_bodies * 1 + 2 * self.num_object_bodies + 1  ##
@@ -714,23 +750,26 @@ class ShadowHandGraspDexRep(BaseTask):
             self.hand_indices.append(hand_idx)
 
 
-            # randomize colors and textures for rigid body
+            # Color by resolved body type rather than legacy rigid-body
+            # indices, which change when tactile pad bodies are preserved.
             num_bodies = self.gym.get_actor_rigid_body_count(env_ptr, shadow_hand_actor)
-            hand_color = [147/255, 215/255, 160/255]
-            hand_rigid_body_index = [[0,1,2,3], [4,5,6,7], [8,9,10,11], [12,13,14,15], [16,17,18,19,20], [21,22,23,24,25]]
-            for n in self.agent_index[0]:
-                for m in n:
-                    for o in hand_rigid_body_index[m]:
-                        self.gym.set_rigid_body_color(env_ptr, shadow_hand_actor, o, gymapi.MESH_VISUAL,
-                                                gymapi.Vec3(*hand_color))
+            hand_color = gymapi.Vec3(147/255, 215/255, 160/255)
+            for body_index in range(num_bodies):
+                self.gym.set_rigid_body_color(
+                    env_ptr,
+                    shadow_hand_actor,
+                    body_index,
+                    gymapi.MESH_VISUAL,
+                    hand_color,
+                )
             if self.tactile_enabled:
-                sensor_color = gymapi.Vec3(0.95, 0.35, 0.10)
+                sensor_color = gymapi.Vec3(1.0, 1.0, 1.0)
                 for touch_sensor_handle in self.touch_sensor_handles:
                     self.gym.set_rigid_body_color(
                         env_ptr,
                         shadow_hand_actor,
                         touch_sensor_handle,
-                        gymapi.MESH_VISUAL,
+                        gymapi.MESH_VISUAL_AND_COLLISION,
                         sensor_color,
                     )
             # create fingertip force-torque sensors
@@ -972,16 +1011,8 @@ class ShadowHandGraspDexRep(BaseTask):
         self.dof_pos = self.shadow_hand_dof_pos
 
         if self.tactile_enabled:
-            current_finger_touch = self.aggregate_finger_touch(
-                self.binary_touch
-            )
-            previous_finger_touch = self.aggregate_finger_touch(
-                self.previous_binary_touch
-            )
-            touch_count = torch.logical_and(
-                current_finger_touch > 0.5,
-                previous_finger_touch > 0.5,
-            ).sum(dim=1).float()
+            valid_grasp = self.update_valid_grasp()
+            touch_count = valid_grasp.float() * 2.0
             object_start_height = self.episode_object_start_height
             lift_target_height = self.touch_lift_target_height
             lift_hold_reward_scale = (
@@ -1115,6 +1146,29 @@ class ShadowHandGraspDexRep(BaseTask):
             self.touch_sensor_finger_membership.unsqueeze(0),
         ).any(dim=2).float()
 
+    def update_valid_grasp(self):
+        finger_touch = self.aggregate_finger_touch(
+            self.binary_touch
+        ) > 0.5
+        thumb_touch = finger_touch[:, 4]
+        other_finger_touch = finger_touch[:, :4].any(dim=1)
+        grasp_candidate = torch.logical_and(
+            thumb_touch,
+            other_finger_touch,
+        )
+        self.consecutive_valid_grasp_steps.copy_(
+            torch.where(
+                grasp_candidate,
+                self.consecutive_valid_grasp_steps + 1,
+                torch.zeros_like(self.consecutive_valid_grasp_steps),
+            )
+        )
+        self.valid_grasp_mask.copy_(
+            self.consecutive_valid_grasp_steps
+            >= self.valid_grasp_required_steps
+        )
+        return self.valid_grasp_mask
+
     def compute_touch_reward(self):
         minimum_lift_target = 1.0e-6
         current_touch = self.binary_touch > 0.5
@@ -1131,7 +1185,7 @@ class ShadowHandGraspDexRep(BaseTask):
             current_finger_touch > 0.5,
             previous_finger_touch > 0.5,
         ).sum(dim=1).float()
-        has_grasp_contact = stable_touch_count >= 2.0
+        has_grasp_contact = self.valid_grasp_mask
         multi_contact_strength = torch.clamp(
             stable_touch_count - 1.0,
             min=0.0,
@@ -1174,9 +1228,23 @@ class ShadowHandGraspDexRep(BaseTask):
         self.episode_elapsed_steps.copy_(current_episode_step)
         self.episode_contact_losses.add_(lost_contacts)
 
+        upward_action_fraction = torch.clamp(
+            self.actions[:, 2]
+            / self.touch_upward_action_reward_saturation,
+            min=0.0,
+            max=1.0,
+        )
+        below_lift_target = lift_amount < self.touch_lift_target_height
+        upward_action_reward = (
+            self.touch_upward_action_reward_scale
+            * upward_action_fraction
+            * has_grasp_contact.float()
+            * below_lift_target.float()
+        )
         touch_reward = (
             self.touch_multi_contact_hold_reward_scale
             * multi_contact_strength
+            + upward_action_reward
             + self.touch_lift_height_reward_scale
             * lift_fraction
             * has_grasp_contact.float()
@@ -1330,6 +1398,16 @@ class ShadowHandGraspDexRep(BaseTask):
             touch_force = torch.norm(
                 force_vectors, p=2, dim=-1
             )
+        valid_touch_height = (
+            self.touch_sensor_pos[:, :, 2]
+            >= self.table_top_z
+            + self.touch_minimum_height_above_table
+        )
+        touch_force = torch.where(
+            valid_touch_height,
+            touch_force,
+            torch.zeros_like(touch_force),
+        )
         self.touch_force = touch_force
 
         touch_on_threshold = self.tactile_cfg["touch"].get(
@@ -1591,13 +1669,7 @@ class ShadowHandGraspDexRep(BaseTask):
             * sweep_fraction
         )
 
-        minimum_touch_z = voxel_cfg.get(
-            "minimum_object_touch_z", 0.62
-        )
-        object_touch = torch.logical_and(
-            self.binary_touch > 0.5,
-            touch_sensor_positions[:, :, 2] >= minimum_touch_z,
-        )
+        object_touch = self.binary_touch > 0.5
 
         contact_exclusion_samples = max(
             int(voxel_cfg.get("contact_exclusion_samples", 1)),
@@ -1941,6 +2013,8 @@ class ShadowHandGraspDexRep(BaseTask):
         if self.tactile_enabled:
             self.binary_touch[env_ids] = 0
             self.previous_binary_touch[env_ids] = 0
+            self.consecutive_valid_grasp_steps[env_ids] = 0
+            self.valid_grasp_mask[env_ids] = False
             self.episode_had_contact[env_ids] = False
             self.episode_had_multi_contact[env_ids] = False
             self.episode_had_lift[env_ids] = False

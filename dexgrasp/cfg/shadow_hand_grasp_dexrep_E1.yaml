@@ -124,6 +124,8 @@ env:
       # Hysteresis avoids rapid binary-touch switching near threshold.
       on_threshold: 1.0
       off_threshold: 0.5
+      # Ignore contacts whose sensor centre is within 5 mm of the table.
+      minimum_height_above_table: 0.005
 
     reward:
       # Shared by E1-E5. All terms are dense and use five-finger
@@ -131,6 +133,13 @@ env:
       # Per-step reward for each additional finger that remains in
       # contact for at least two consecutive simulation steps.
       multi_contact_hold: 0.02
+      # A lift-ready grasp requires thumb + any other finger for this
+      # many consecutive control steps.
+      valid_grasp_steps: 3
+      # Reward moderate positive hand-base Z actions only after a valid
+      # grasp and only until the object reaches the lift target.
+      upward_action: 0.075
+      upward_action_saturation: 0.3
       # Per-step dense height reward, paid only while at least two
       # different fingers maintain contact across two simulation steps.
       # At the 12 cm target this term is 0.25.
@@ -178,9 +187,6 @@ env:
       contact_exclusion_samples: 1
       free_radius_voxels: 0
       contact_radius_voxels: 1
-
-      # Reject likely table contacts when writing object-contact evidence.
-      minimum_object_touch_z: 0.62
 
   objectPositionRandomization:
     enabled: True
