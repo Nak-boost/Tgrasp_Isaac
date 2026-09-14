@@ -82,6 +82,28 @@ def load_cfg(args, use_rlg_config=False):
     with open(os.path.join(os.getcwd(), args.cfg_env), 'r') as f:
         cfg = yaml.load(f, Loader=yaml.SafeLoader)
 
+    if args.history_length > 0:
+        if args.history_length not in (4, 8, 16):
+            raise ValueError("--history_length must be 4, 8, or 16")
+        history_cfg = cfg["env"].setdefault(
+            "tactile", {}
+        ).setdefault("history", {})
+        history_cfg["length"] = args.history_length
+
+    if args.relative_position_mask_probability >= 0.0:
+        if args.relative_position_mask_probability > 1.0:
+            raise ValueError(
+                "--relative_position_mask_probability must be "
+                "between 0 and 1"
+            )
+        relative_position_cfg = cfg["env"].setdefault(
+            "tactile", {}
+        ).setdefault("relative_object_position", {})
+        relative_position_cfg["enabled"] = True
+        relative_position_cfg["mask_probability"] = (
+            args.relative_position_mask_probability
+        )
+
     # Override number of environments if passed on the command line
     if args.num_envs > 0:
         cfg["env"]["numEnvs"] = args.num_envs
@@ -256,6 +278,13 @@ def get_args(benchmark=False, use_rlg_config=False):
             "help": "Number of environments to create - override config file"},
         {"name": "--episode_length", "type": int, "default": 0,
             "help": "Episode length, by default is read from yaml config"},
+        {"name": "--history_length", "type": int, "default": 0,
+            "help": "Override tactile history length with 4, 8, or 16; "
+                    "0 uses cfg_env"},
+        {"name": "--relative_position_mask_probability", "type": float,
+            "default": -1.0,
+            "help": "Mask the 3D relative-object-position observation once "
+                    "per episode with this probability; -1 uses cfg_env"},
         {"name": "--seed", "type": int, "help": "Random seed"},
         {"name": "--max_iterations", "type": int, "default": 0,
             "help": "Set a maximum number of training iterations"},
