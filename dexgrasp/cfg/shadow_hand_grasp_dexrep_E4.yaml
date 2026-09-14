@@ -9,7 +9,7 @@ env:
   env_name: "shadow_hand_grasp_dexrep"
   numEnvs: 1024
   envSpacing: 1.5
-  episodeLength: 200 # 250
+  episodeLength: 400
   enableDebugVis: False
   aggregateMode: 1
 
@@ -109,10 +109,25 @@ env:
     experiment: "E4"
 
     relative_object_position:
-      # (object world position - palm-reference world position) / scale.
-      # Disable by writing three zeros while retaining the same network shape.
+      # Estimate object position from current and previous tactile contacts.
+      # Estimator quality is internal; the policy still receives only XYZ.
       enabled: True
+      source: "tactile_estimate"
+      mask_probability: 0.0
       scale: [0.35, 0.35, 0.40]
+      estimator:
+        reliable_alpha: 0.6
+        fallback_alpha: 0.2
+        fallback_quality: 0.3
+        quality_decay: 0.99
+        minimum_quality: 0.1
+        minimum_contacts: 2
+        minimum_eigenvalue_ratio: 0.05
+        maximum_residual: 0.03
+        minimum_forward_fraction: 0.6
+        maximum_center_distance: 0.20
+        maximum_hand_distance: 0.40
+        maximum_height_above_table: 0.40
 
     touch:
       # Five distal, four middle, four proximal and one palm-side pad.
@@ -136,6 +151,10 @@ env:
       # A lift-ready grasp requires thumb + any other finger for this
       # many consecutive control steps.
       valid_grasp_steps: 3
+      # Reward moderate positive hand-base Z actions only after a valid
+      # grasp and only until the object reaches the lift target.
+      upward_action: 0.075
+      upward_action_saturation: 0.3
       # Per-step dense height reward, paid only while at least two
       # different fingers maintain contact across two simulation steps.
       # At the 12 cm target this term is 0.25.
@@ -163,26 +182,21 @@ env:
       frame_dim: 130
 
     voxel:
-      # Channel 0: free-space evidence.
-      # Channel 1: object-contact evidence.
-      # Channel 2: confidence/recency of either kind of evidence.
-      # Unknown and expired voxels approach [0, 0, 0].
-      channels: 3
-      grid_size: [16, 16, 8]
+      # Channel 0: occupancy (-1 unknown, 0 free, +1 contact).
+      # Channel 1: recency (1 current, decays toward 0).
+      channels: 2
+      grid_size: [32, 32, 16]
       lower: [-0.35, -0.35, 0.55]
       upper: [0.35, 0.35, 0.95]
 
-      # Old evidence decays because the object can move after contact.
-      free_decay: 0.98
-      contact_decay: 0.95
-      confidence_decay: 0.98
+      # Expired observations become unknown again.
+      recency_decay: 0.98
+      expiration_threshold: 0.1
 
-      # Sample all 14 tactile-link trajectories. Free evidence remains
-      # conservative; contact is splatted to a small spherical neighborhood.
-      sweep_samples: 8
-      contact_exclusion_samples: 1
-      free_radius_voxels: 0
-      contact_radius_voxels: 1
+      # The CNN stem produces 4x4x2 spatial tokens.
+      transformer_layers: 2
+      attention_heads: 4
+      feedforward_dim: 128
 
   objectPositionRandomization:
     enabled: True

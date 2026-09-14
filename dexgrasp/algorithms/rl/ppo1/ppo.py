@@ -33,8 +33,6 @@ _TACTILE_EPISODE_METRICS = {
     "contact_losses": ("Contact losses per episode", 1.0),
 }
 
-_AUXILIARY_INFO_KEYS = {"upward_action_supervision_mask"}
-
 
 class PPO:
     def __init__(self,
@@ -109,51 +107,6 @@ class PPO:
         self.lam = learn_cfg["lam"]
         self.max_grad_norm = learn_cfg.get("max_grad_norm", 2.0)
         self.use_clipped_value_loss = learn_cfg.get("use_clipped_value_loss", False)
-        upward_supervision_cfg = learn_cfg.get(
-            "upward_action_supervision", {}
-        )
-        self.upward_action_supervision_enabled = bool(
-            upward_supervision_cfg.get("enabled", False)
-        )
-        self.upward_action_supervision_coef = float(
-            upward_supervision_cfg.get("loss_coef", 0.2)
-        )
-        self.upward_action_supervision_iterations = int(
-            upward_supervision_cfg.get("decay_iterations", 2000)
-        )
-        self.upward_action_supervision_trigger_lift_rate = float(
-            upward_supervision_cfg.get("trigger_lift_rate", 0.25)
-        )
-        self.upward_action_supervision_success_window = int(
-            upward_supervision_cfg.get("success_window", 200)
-        )
-        self.upward_action_supervision_decay_start = None
-        self.upward_action_supervision_lift_buffer = deque(
-            maxlen=self.upward_action_supervision_success_window
-        )
-        self.upward_action_supervision_target = float(
-            upward_supervision_cfg.get("target_action", 0.05)
-        )
-        self.upward_action_supervision_index = int(
-            upward_supervision_cfg.get("action_index", 2)
-        )
-        if self.upward_action_supervision_enabled:
-            if self.upward_action_supervision_iterations < 1:
-                raise ValueError(
-                    "upward_action_supervision.decay_iterations must be positive"
-                )
-            if self.upward_action_supervision_success_window < 1:
-                raise ValueError(
-                    "upward_action_supervision.success_window must be positive"
-                )
-            if not 0.0 <= self.upward_action_supervision_trigger_lift_rate <= 1.0:
-                raise ValueError(
-                    "upward_action_supervision.trigger_lift_rate must be in [0, 1]"
-                )
-            if not 0 <= self.upward_action_supervision_index < self.action_space.shape[0]:
-                raise ValueError(
-                    "upward_action_supervision.action_index is outside the action space"
-                )
         self.model_dir = log_dir+'/checkpoint'
         os.makedirs(self.model_dir, exist_ok=True)
 
@@ -306,12 +259,6 @@ class PPO:
             cur_reward_sum = torch.zeros(self.vec_env.num_envs, dtype=torch.float, device=self.device)
             cur_episode_length = torch.zeros(self.vec_env.num_envs, dtype=torch.float, device=self.device)
             env_mean_success = 0.0
-            upward_action_supervision_mask = torch.zeros(
-                self.vec_env.num_envs,
-                1,
-                dtype=torch.float,
-                device=self.device,
-            )
 
             for it in range(self.current_learning_iteration, num_learning_iterations):
                 start = time.time()
@@ -330,7 +277,6 @@ class PPO:
                     if self.apply_reset:
                         current_obs = self.vec_env.reset()
                         current_states = self.vec_env.get_state()
-                        upward_action_supervision_mask.zero_()
                     # Compute the action
                     actions, actions_log_prob, values, mu, sigma, current_state, current_obs_feats = self.actor_critic.act(current_obs_state)
                     # Step the vec_environment
@@ -346,31 +292,7 @@ class PPO:
                     # print(rews)
                     # next_states = self.vec_env.get_state()
                     # Record the transition
-                    self.storage.add_transitions(
-                        current_state,
-                        current_obs_feats,
-                        actions,
-                        rews,
-                        dones,
-                        values,
-                        actions_log_prob,
-                        mu,
-                        sigma,
-                        self.obs_device,
-                        upward_action_supervision_mask,
-                    )
-                    next_supervision_mask = infos.get(
-                        "upward_action_supervision_mask"
-                    )
-                    if next_supervision_mask is None:
-                        upward_action_supervision_mask.zero_()
-                    else:
-                        upward_action_supervision_mask.copy_(
-                            next_supervision_mask.view(-1, 1).to(self.device)
-                        )
-                        upward_action_supervision_mask.mul_(
-                            1.0 - dones.view(-1, 1).float()
-                        )
+                    self.storage.add_transitions(current_state, current_obs_feats, actions, rews, dones, values, actions_log_prob, mu, sigma, self.obs_device)
                     current_obs_state.copy_(next_obs_state)
                     # current_states.copy_(next_states)
                     # Book keeping
@@ -414,13 +336,6 @@ class PPO:
                             values
                         )
 
-                upward_action_supervision_lift_success_rate = (
-                    self.update_upward_action_supervision_schedule(
-                        it,
-                        episode_metrics.get("lifted", []),
-                    )
-                )
-
                 _, _, last_values, _, _, _, _ = self.actor_critic.act(current_obs_state)
                 stop = time.time()
                 collection_time = stop - start
@@ -430,15 +345,7 @@ class PPO:
                 # Learning step
                 start = stop
                 self.storage.compute_returns(last_values, self.gamma, self.lam)
-                (
-                    mean_value_loss,
-                    mean_surrogate_loss,
-                    mean_upward_action_supervision_loss,
-                    mean_upward_action_supervision_fraction,
-                ) = self.update(it, num_learning_iterations)
-                upward_action_supervision_coef = (
-                    self.get_upward_action_supervision_coef(it)
-                )
+                mean_value_loss, mean_surrogate_loss = self.update(it, num_learning_iterations)
 
                 self.storage.clear()
                 stop = time.time()
@@ -462,10 +369,7 @@ class PPO:
         ep_string = f''
         if locs['ep_infos']:
             for key in locs['ep_infos'][0]:
-                if (
-                    key in _TACTILE_EPISODE_METRICS
-                    or key in _AUXILIARY_INFO_KEYS
-                ):
+                if key in _TACTILE_EPISODE_METRICS:
                     continue
                 infotensor = torch.tensor([], device=self.device)
                 for ep_info in locs['ep_infos']:
@@ -477,32 +381,6 @@ class PPO:
 
         self.writer.add_scalar('Loss/value_function', locs['mean_value_loss'], locs['it'])
         self.writer.add_scalar('Loss/surrogate', locs['mean_surrogate_loss'], locs['it'])
-        if self.upward_action_supervision_enabled:
-            self.writer.add_scalar(
-                "Loss/upward_action_supervision",
-                locs["mean_upward_action_supervision_loss"],
-                locs["it"],
-            )
-            self.writer.add_scalar(
-                "Aux/upward_action_supervision_fraction",
-                locs["mean_upward_action_supervision_fraction"],
-                locs["it"],
-            )
-            self.writer.add_scalar(
-                "Aux/upward_action_supervision_coef",
-                locs["upward_action_supervision_coef"],
-                locs["it"],
-            )
-            self.writer.add_scalar(
-                "Aux/upward_action_supervision_lift_success_rate",
-                locs["upward_action_supervision_lift_success_rate"],
-                locs["it"],
-            )
-            self.writer.add_scalar(
-                "Aux/upward_action_supervision_decay_triggered",
-                float(self.upward_action_supervision_decay_start is not None),
-                locs["it"],
-            )
         self.writer.add_scalar('Policy/mean_noise_std', mean_std.item(), locs['it'])
         self.writer.add_scalar('Train/env_mean_success', locs['env_mean_success'], locs['it'])
         if len(locs['rewbuffer']) > 0:
@@ -548,7 +426,6 @@ class PPO:
                               'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                           f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
                           f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
-                          f"""{'Upward supervision loss:':>{pad}} {locs['mean_upward_action_supervision_loss']:.4f}\n"""
                           f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
                           f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
                           f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n"""
@@ -567,7 +444,6 @@ class PPO:
                             'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                           f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
                           f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
-                          f"""{'Upward supervision loss:':>{pad}} {locs['mean_upward_action_supervision_loss']:.4f}\n"""
                           f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
                           f"""{'Mean reward/step:':>{pad}} {locs['mean_reward']:.2f}\n"""
                           f"""{'Mean episode length/episode:':>{pad}} {locs['mean_trajectory_length']:.2f}\n""")
@@ -596,11 +472,6 @@ class PPO:
     def update(self, cur_iter, max_iter):
         mean_value_loss = 0
         mean_surrogate_loss = 0
-        mean_upward_action_supervision_loss = 0
-        mean_upward_action_supervision_fraction = 0
-        upward_action_supervision_coef = (
-            self.get_upward_action_supervision_coef(cur_iter)
-        )
 
         batch = self.storage.mini_batch_generator(self.num_mini_batches)
         for epoch in range(self.num_learning_epochs):
@@ -623,10 +494,6 @@ class PPO:
                 advantages_batch = self.storage.advantages.view(-1, 1)[indices]
                 old_mu_batch = self.storage.mu.view(-1, self.storage.actions.size(-1))[indices]
                 old_sigma_batch = self.storage.sigma.view(-1, self.storage.actions.size(-1))[indices]
-                upward_action_supervision_mask_batch = (
-                    self.storage.upward_action_supervision_masks
-                    .view(-1, 1)[indices]
-                )
 
                 actions_log_prob_batch, entropy_batch, value_batch, mu_batch, sigma_batch = self.actor_critic.evaluate(obs_batch, states_batch, actions_batch)
 
@@ -662,26 +529,7 @@ class PPO:
                     # print(f'returns_batch: {returns_batch}')
                     # print(f'returns_batch: {returns_batch}')
 
-                upward_action_error = (
-                    mu_batch[:, self.upward_action_supervision_index]
-                    - self.upward_action_supervision_target
-                ).pow(2)
-                supervision_count = torch.clamp(
-                    upward_action_supervision_mask_batch.sum(),
-                    min=1.0,
-                )
-                upward_action_supervision_loss = (
-                    upward_action_error
-                    * upward_action_supervision_mask_batch.squeeze(-1)
-                ).sum() / supervision_count
-
-                loss = (
-                    surrogate_loss
-                    + self.value_loss_coef * value_loss
-                    - self.entropy_coef * entropy_batch.mean()
-                    + upward_action_supervision_coef
-                    * upward_action_supervision_loss
-                )
+                loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
                 # print(loss.item())
                 # Gradient step
                 self.optimizer.zero_grad()
@@ -691,68 +539,12 @@ class PPO:
 
                 mean_value_loss += value_loss.item()
                 mean_surrogate_loss += surrogate_loss.item()
-                mean_upward_action_supervision_loss += (
-                    upward_action_supervision_loss.item()
-                )
-                mean_upward_action_supervision_fraction += (
-                    upward_action_supervision_mask_batch.mean().item()
-                )
 
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
-        mean_upward_action_supervision_loss /= num_updates
-        mean_upward_action_supervision_fraction /= num_updates
 
-        return (
-            mean_value_loss,
-            mean_surrogate_loss,
-            mean_upward_action_supervision_loss,
-            mean_upward_action_supervision_fraction,
-        )
-
-    def get_upward_action_supervision_coef(self, cur_iter):
-        if not self.upward_action_supervision_enabled:
-            return 0.0
-        if self.upward_action_supervision_decay_start is None:
-            return self.upward_action_supervision_coef
-        remaining_fraction = max(
-            1.0
-            - float(cur_iter - self.upward_action_supervision_decay_start)
-            / float(self.upward_action_supervision_iterations),
-            0.0,
-        )
-        return self.upward_action_supervision_coef * remaining_fraction
-
-    def update_upward_action_supervision_schedule(
-        self, cur_iter, lifted_episodes
-    ):
-        if not self.upward_action_supervision_enabled:
-            return 0.0
-        self.upward_action_supervision_lift_buffer.extend(lifted_episodes)
-        if not self.upward_action_supervision_lift_buffer:
-            return 0.0
-
-        lift_success_rate = statistics.mean(
-            self.upward_action_supervision_lift_buffer
-        )
-        window_is_full = (
-            len(self.upward_action_supervision_lift_buffer)
-            >= self.upward_action_supervision_success_window
-        )
-        if (
-            self.upward_action_supervision_decay_start is None
-            and window_is_full
-            and lift_success_rate
-            >= self.upward_action_supervision_trigger_lift_rate
-        ):
-            self.upward_action_supervision_decay_start = cur_iter
-            print(
-                "Upward action supervision decay started at iteration "
-                f"{cur_iter}: rolling lift success rate "
-                f"{lift_success_rate * 100.0:.2f}%"
-            )
-        return lift_success_rate
+        return mean_value_loss, mean_surrogate_loss
 
     def adjust_learning_rate_cos(self, optimizer, epoch, max_epoch, iter, max_iter):
         lr = self.step_size_init * 0.5 * (1. + math.cos(math.pi * (iter + epoch / max_epoch) / max_iter))

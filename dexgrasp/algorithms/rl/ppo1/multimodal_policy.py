@@ -232,6 +232,9 @@ class VoxelObservationEncoder(nn.Module):
         embedding_dim,
         grid_size,
         channels,
+        transformer_layers,
+        attention_heads,
+        feedforward_dim,
         embedding_normalization,
     ):
         super().__init__()
@@ -245,13 +248,17 @@ class VoxelObservationEncoder(nn.Module):
 
         self.channels = channels
         self.grid_size = tuple(grid_size)
+        token_dim = 64
+        if token_dim % attention_heads != 0:
+            raise ValueError(
+                "Voxel token dimension must be divisible by attention heads"
+            )
         self.cnn = nn.Sequential(
             nn.Conv3d(
                 channels,
                 16,
-                kernel_size=3,
-                stride=2,
-                padding=1,
+                kernel_size=4,
+                stride=4,
             ),
             nn.GroupNorm(4, 16),
             nn.ELU(),
@@ -264,7 +271,12 @@ class VoxelObservationEncoder(nn.Module):
             ),
             nn.GroupNorm(8, 32),
             nn.ELU(),
-            nn.Conv3d(32, 64, kernel_size=3, padding=1),
+            nn.Conv3d(
+                32,
+                token_dim,
+                kernel_size=3,
+                padding=1,
+            ),
             nn.GroupNorm(8, 64),
             nn.ELU(),
         )
@@ -272,10 +284,35 @@ class VoxelObservationEncoder(nn.Module):
             feature_shape = self.cnn(
                 torch.zeros(1, channels, *self.grid_size)
             ).shape[1:]
-        self.projection = nn.Linear(
-            int(np.prod(feature_shape)),
-            embedding_dim,
+        self.token_dim = feature_shape[0]
+        self.num_spatial_tokens = int(np.prod(feature_shape[1:]))
+        self.class_token = nn.Parameter(
+            torch.zeros(1, 1, self.token_dim)
         )
+        self.position_embedding = nn.Parameter(
+            torch.zeros(
+                1,
+                self.num_spatial_tokens + 1,
+                self.token_dim,
+            )
+        )
+        transformer_layer = nn.TransformerEncoderLayer(
+            d_model=self.token_dim,
+            nhead=attention_heads,
+            dim_feedforward=feedforward_dim,
+            dropout=0.0,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(
+            transformer_layer,
+            num_layers=transformer_layers,
+            norm=nn.LayerNorm(self.token_dim),
+        )
+        self.projection = nn.Linear(self.token_dim, embedding_dim)
+        nn.init.normal_(self.class_token, mean=0.0, std=0.02)
+        nn.init.normal_(self.position_embedding, mean=0.0, std=0.02)
         nn.init.orthogonal_(self.projection.weight, gain=np.sqrt(2))
         nn.init.zeros_(self.projection.bias)
         self.embedding_normalizer = build_embedding_normalizer(
@@ -289,8 +326,15 @@ class VoxelObservationEncoder(nn.Module):
             self.channels,
             *self.grid_size,
         )
-        voxel_features = self.cnn(voxel_map).flatten(1)
-        embedding = self.projection(voxel_features)
+        voxel_features = self.cnn(voxel_map)
+        spatial_tokens = voxel_features.flatten(2).transpose(1, 2)
+        class_token = self.class_token.expand(
+            observations.shape[0], -1, -1
+        )
+        tokens = torch.cat((class_token, spatial_tokens), dim=1)
+        tokens = tokens + self.position_embedding
+        encoded_tokens = self.transformer(tokens)
+        embedding = self.projection(encoded_tokens[:, 0])
         return self.embedding_normalizer(embedding)
 
 
@@ -516,7 +560,16 @@ class ActorCriticMultimodal(nn.Module):
                     input_dim=branch_dim,
                     embedding_dim=self.embedding_dim,
                     grid_size=voxel_cfg["grid_size"],
-                    channels=voxel_cfg.get("channels", 4),
+                    channels=voxel_cfg.get("channels", 2),
+                    transformer_layers=int(
+                        voxel_cfg.get("transformer_layers", 2)
+                    ),
+                    attention_heads=int(
+                        voxel_cfg.get("attention_heads", 4)
+                    ),
+                    feedforward_dim=int(
+                        voxel_cfg.get("feedforward_dim", 128)
+                    ),
                     embedding_normalization=embedding_normalization,
                 )
             elif encoder_type == "pointnet_global":

@@ -9,7 +9,7 @@ env:
   env_name: "shadow_hand_grasp_dexrep"
   numEnvs: 1024
   envSpacing: 1.5
-  episodeLength: 400
+  episodeLength: 200 # 250
   enableDebugVis: False
   aggregateMode: 1
 
@@ -25,7 +25,7 @@ env:
   forceLimitScale: 1.0
   useRelativeControl: False
   dofSpeedScale: 20.0
-  actionsMovingAverage: 0.2
+  actionsMovingAverage: 1.0
   controlFrequencyInv: 1 # 60 Hz
 
   startPositionNoise: 0.0
@@ -36,14 +36,13 @@ env:
   resetDofPosRandomInterval: 0.0
   resetDofVelRandomInterval: 0.0
 
-  # Scale for signed hand-object distance progress.
-  distRewardScale: 2
-  transition_scale: 0.15
+  distRewardScale: 20
+  transition_scale: 0.5
   orientation_scale: 0.1
   rotRewardScale: 1.0
   rotEps: 0.1
   actionPenaltyScale: -0.0002
-  reachGoalBonus: 40
+  reachGoalBonus: 250
   fallDistance: 0.4
   fallPenalty: 0.0
 
@@ -55,47 +54,31 @@ env:
   # which is required by PPO1 RolloutStorage.
   obs_dim:
     prop: 89
-    current_touch: 14
-    relative_object_position: 3
+    current_touch: 5
 
   obs_encoders:
     prop:
       type: "mlp"
       hidden_dims: [256, 128]
       activation: "elu"
-      embedding_normalization: "layer_norm"
 
     current_touch:
       type: "touch"
       hidden_dims: [32, 64]
       activation: "elu"
-      # Raw binary touch is not normalized; only its learned embedding is.
-      embedding_normalization: "layer_norm"
-
-    relative_object_position:
-      # Keep the scaled x/y/z displacement interpretable and bypass the
-      # common 128-dimensional learned embedding.
-      type: "identity"
+      # BN is applied to the 128-dimensional embedding, never to raw
+      # five-dimensional binary touch.
+      embedding_batch_norm: True
 
     oracle_object:
       type: "object"
       hidden_dims: [128, 128]
       activation: "elu"
-      embedding_normalization: "layer_norm"
-
-    pointnet_global:
-      type: "pointnet_global"
-      hidden_dims: [512, 256]
-      activation: "elu"
-      embedding_normalization: "layer_norm"
-
-    dexrep_interaction:
-      type: "dexrep_interaction"
-      embedding_normalization: "layer_norm"
+      embedding_batch_norm: True
 
     voxel_map:
       type: "voxel"
-      embedding_normalization: "layer_norm"
+      embedding_batch_norm: True
 
     touch_history:
       type: "history"
@@ -103,7 +86,7 @@ env:
       frame_embedding_dim: 128
       recurrent_hidden_dim: 128
       activation: "elu"
-      embedding_normalization: "layer_norm"
+      embedding_batch_norm: True
 
   tactile:
     enabled: True
@@ -112,109 +95,74 @@ env:
     # 24 actions: 6 floating-base commands and 18 actuator commands.
     hand_dof_count: 22
 
-    # Every experiment includes prop + current touch + optional relative position.
-    # E2 additionally uses object orientation/velocity and frozen PointNet.
-    # E3 adds voxel map; E4 adds touch history.
-    # E5 adds oracle state, frozen PointNet and DexRep interaction.
-    experiment: "E5"
-
-    oracle_geometry:
-      pointnet_global_dim: 1024
-      dexrep_interaction_dim: 2360
-      dexrep_distance_dim: 80
-      dexrep_occupancy_grid_size: [10, 10, 10]
-      dexrep_keypoint_count: 20
-      dexrep_local_feature_dim: 64
-
-    relative_object_position:
-      # Estimate object position from current and previous tactile contacts.
-      # Estimator quality is internal; the policy still receives only XYZ.
-      enabled: True
-      source: "tactile_estimate"
-      mask_probability: 0.0
-      scale: [0.35, 0.35, 0.40]
-      estimator:
-        reliable_alpha: 0.6
-        fallback_alpha: 0.2
-        fallback_quality: 0.3
-        quality_decay: 0.99
-        minimum_quality: 0.1
-        minimum_contacts: 2
-        minimum_eigenvalue_ratio: 0.05
-        maximum_residual: 0.03
-        minimum_forward_fraction: 0.6
-        maximum_center_distance: 0.20
-        maximum_hand_distance: 0.40
-        maximum_height_above_table: 0.40
+    # E1: prop + current_touch
+    # E2: prop + current_touch + oracle_object
+    # E3: prop + current_touch + voxel_map
+    # E4: prop + current_touch + touch_history
+    experiment: "E4"
 
     touch:
-      # Five distal, four middle, four proximal and one palm-side pad.
-      layout: "pad14"
-      asset_file: "mjcf/open_ai_assets/hand/shadow_hand_tactile.xml"
-      # Project each pad contact force onto its inward surface normal.
-      force_mode: "normal"
-      # Compressive normal-force units (N).
+      # Raw Isaac Gym force-sensor units.
       # Hysteresis avoids rapid binary-touch switching near threshold.
       on_threshold: 1.0
       off_threshold: 0.5
-      # Ignore contacts whose sensor centre is within 5 mm of the table.
-      minimum_height_above_table: 0.005
 
     reward:
-      # Shared by E1-E5. All terms are dense and use five-finger
-      # contact aggregation rather than counting individual link sensors.
-      # Per-step reward for each additional finger that remains in
-      # contact for at least two consecutive simulation steps.
-      multi_contact_hold: 0.02
-      # A lift-ready grasp requires thumb + any other finger for this
-      # many consecutive control steps.
-      valid_grasp_steps: 3
-      # Reward moderate positive hand-base Z actions only after a valid
-      # grasp and only until the object reaches the lift target.
-      upward_action: 0.075
-      upward_action_saturation: 0.3
-      # Per-step dense height reward, paid only while at least two
-      # different fingers maintain contact across two simulation steps.
-      # At the 12 cm target this term is 0.25.
-      lift_height: 0.25
-      # Required object height increase relative to reset height.
-      lift_target_height: 0.12
-      # Additional per-step reward while the object remains above target.
-      lift_hold: 0.5
-      # Reset after this many consecutive steps above target.
-      lift_hold_steps: 10
-
-      # Signed reach progress uses the palm and the mean distance of
-      # distal, middle and proximal finger-link keypoints. It is not
-      # reduced after contact.
-      reach_palm_weight: 0.5
-      reach_distal_weight: 1.0
-      reach_middle_weight: 0.25
-      reach_proximal_weight: 0.0
+      # Shared by E1-E4. These terms use binary fingertip touch only.
+      # Applied once when at least one fingertip is touching.
+      contact: 0.05
+      # Applied for every touching fingertip beyond the first.
+      multi_contact: 0.02
+      # Applied for each fingertip that remains in contact.
+      contact_hold: 0.01
+      # Subtracted for each fingertip that loses contact.
+      contact_loss: 0.05
+      # Object-center height used only for the episode lift metric.
+      lift_height: 0.80
 
     history:
       # Each frame contains:
-      # tactile-link positions (42), touch (14),
+      # fingertip positions (15), touch (5),
       # q/qd/wrist proprioception (50), previous action (24).
       length: 8
-      frame_dim: 130
+      frame_dim: 94
 
     voxel:
-      # Channel 0: occupancy (-1 unknown, 0 free, +1 contact).
-      # Channel 1: recency (1 current, decays toward 0).
-      channels: 2
-      grid_size: [32, 32, 16]
+      # Channel 0: potential object location.
+      #   1 = unknown or possible object location.
+      #   0 = recently explored free space.
+      #
+      # Channel 1: historical contact confidence.
+      #   1 = current contact; it decays toward 0.
+      #
+      # Channel 2: observation age.
+      #  -1 = never explored.
+      #   0 = observed during the current step.
+      #  (0, 1] = normalized time since the latest observation.
+      #
+      # An additional observed/free channel is unnecessary because
+      # potential already records free-space evidence and age=-1
+      # explicitly distinguishes unknown from explored voxels.
+      channels: 3
+      grid_size: [16, 16, 8]
       lower: [-0.35, -0.35, 0.55]
       upper: [0.35, 0.35, 0.95]
+      max_age: 64
 
-      # Expired observations become unknown again.
-      recency_decay: 0.98
-      expiration_threshold: 0.1
+      # Contact evidence decays after contact disappears. Potential
+      # gradually returns toward 1 so stale free-space evidence does
+      # not permanently exclude a movable object from that location.
+      contact_decay: 0.95
+      potential_recovery: 0.005
 
-      # The CNN stem produces 4x4x2 spatial tokens.
-      transformer_layers: 2
-      attention_heads: 4
-      feedforward_dim: 128
+      # Fingertip trajectory sampling and voxel dilation.
+      sweep_samples: 8
+      contact_exclusion_samples: 1
+      free_radius_voxels: 0
+      contact_radius_voxels: 1
+
+      # Reject likely table contacts when writing object-contact evidence.
+      minimum_object_touch_z: 0.62
 
   objectPositionRandomization:
     enabled: True
@@ -346,8 +294,6 @@ sim:
   physx:
     num_threads: 4
     solver_type: 1  # 0: pgs, 1: tgs
-    # Required by net_contact_force_tensor; collect every substep.
-    contact_collection: 2
     num_position_iterations: 8 # 8 bottle
     num_velocity_iterations: 0
     contact_offset: 0.002
