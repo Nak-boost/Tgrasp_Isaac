@@ -361,6 +361,7 @@ def main():
     }
 
     observations = env.reset()
+    recurrent_hidden_states = ppo.initial_recurrent_state()
     print(
         f"Recording environment {env_id} from episode step 0 "
         f"for up to {VIS_ARGS.vis_steps} steps."
@@ -368,9 +369,16 @@ def main():
     frame_index = 0
     for step in range(1, VIS_ARGS.vis_steps + 1):
         with torch.no_grad():
-            actions = ppo.actor_critic.act_inference(observations)
+            actions, next_recurrent_hidden_states = ppo.act_inference(
+                observations,
+                recurrent_hidden_states,
+            )
         results = env.step(actions)
         observations, rewards, dones = results[:3]
+        recurrent_hidden_states = ppo.mask_recurrent_state(
+            next_recurrent_hidden_states,
+            dones,
+        )
         episode_done = bool(dones[env_id].item())
 
         if step % VIS_ARGS.vis_interval != 0 and not episode_done:

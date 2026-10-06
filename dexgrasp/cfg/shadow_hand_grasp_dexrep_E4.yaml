@@ -108,6 +108,15 @@ env:
     # E5 adds oracle state, frozen PointNet and DexRep interaction.
     experiment: "E4"
 
+    # E4-specific exploration range. The higher floor prevents the
+    # history policy from becoming nearly deterministic before it has
+    # discovered thumb-opposed grasps; the lower initial value and cap
+    # avoid full-scale perturbations around contact.
+    policy_noise:
+      initial: 0.25
+      minimum: 0.10
+      maximum: 0.50
+
     relative_object_position:
       # Estimate object position from current and previous tactile contacts.
       # Estimator quality is internal; the policy still receives only XYZ.
@@ -145,8 +154,8 @@ env:
     reward:
       # Shared by E1-E5. All terms are dense and use five-finger
       # contact aggregation rather than counting individual link sensors.
-      # Per-step reward for each additional finger that remains in
-      # contact for at least two consecutive simulation steps.
+      # Per-step reward for each non-thumb finger in stable contact,
+      # provided the thumb is also in stable contact.
       multi_contact_hold: 0.02
       # A lift-ready grasp requires thumb + any other finger for this
       # many consecutive control steps.
@@ -200,8 +209,8 @@ env:
 
   objectPositionRandomization:
     enabled: True
-    xRange: [-0.15, 0.15]
-    yRange: [-0.15, 0.15]
+    xRange: [-0.25, 0.25]
+    yRange: [-0.25, 0.25]
 
   handAgentIndex: "[[0, 1, 2, 3, 4, 5]]"
   asymmetric_observations: False

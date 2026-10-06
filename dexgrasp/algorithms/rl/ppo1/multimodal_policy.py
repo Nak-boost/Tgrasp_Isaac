@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.distributions import MultivariateNormal
+from torch.distributions import Independent, Normal
 
 
 def get_activation(activation_name):
@@ -338,6 +338,48 @@ class VoxelObservationEncoder(nn.Module):
         return self.embedding_normalizer(embedding)
 
 
+class LocalVoxelObservationEncoder(nn.Module):
+    def __init__(
+        self, input_dim, embedding_dim, grid_size, channels,
+        embedding_normalization,
+    ):
+        super().__init__()
+        expected_dim = channels * int(np.prod(grid_size))
+        if input_dim != expected_dim:
+            raise ValueError(
+                f"local_voxel_map dimension is {input_dim}, expected {expected_dim}"
+            )
+        self.channels = channels
+        self.grid_size = tuple(grid_size)
+        self.cnn = nn.Sequential(
+            nn.Conv3d(channels, 16, kernel_size=3, stride=2, padding=1),
+            nn.GroupNorm(4, 16),
+            nn.ELU(),
+            nn.Conv3d(16, 32, kernel_size=3, stride=2, padding=1),
+            nn.GroupNorm(8, 32),
+            nn.ELU(),
+            nn.Flatten(),
+        )
+        with torch.no_grad():
+            flattened_dim = self.cnn(
+                torch.zeros(1, channels, *self.grid_size)
+            ).shape[1]
+        self.projection = nn.Linear(flattened_dim, embedding_dim)
+        nn.init.orthogonal_(self.projection.weight, gain=np.sqrt(2))
+        nn.init.zeros_(self.projection.bias)
+        self.embedding_normalizer = build_embedding_normalizer(
+            embedding_dim, embedding_normalization,
+        )
+
+    def forward(self, observations):
+        local_map = observations.reshape(
+            observations.shape[0], self.channels, *self.grid_size,
+        )
+        return self.embedding_normalizer(
+            self.projection(self.cnn(local_map))
+        )
+
+
 class PointNetGlobalFeatureEncoder(nn.Module):
     def __init__(
         self,
@@ -528,6 +570,7 @@ class ActorCriticMultimodal(nn.Module):
         encoder_specs = env_cfg.get("obs_encoders", {})
         tactile_cfg = env_cfg.get("tactile", {})
         voxel_cfg = env_cfg.get("tactile", {}).get("voxel", {})
+        local_voxel_cfg = tactile_cfg.get("local_voxel", {})
         history_cfg = tactile_cfg.get("history", {})
         geometry_cfg = tactile_cfg.get(
             "oracle_geometry", {}
@@ -570,6 +613,14 @@ class ActorCriticMultimodal(nn.Module):
                     feedforward_dim=int(
                         voxel_cfg.get("feedforward_dim", 128)
                     ),
+                    embedding_normalization=embedding_normalization,
+                )
+            elif encoder_type == "local_voxel":
+                self.branch_encoders[branch_name] = LocalVoxelObservationEncoder(
+                    input_dim=branch_dim,
+                    embedding_dim=self.embedding_dim,
+                    grid_size=local_voxel_cfg["grid_size"],
+                    channels=local_voxel_cfg["channels"],
                     embedding_normalization=embedding_normalization,
                 )
             elif encoder_type == "pointnet_global":
@@ -698,24 +749,83 @@ class ActorCriticMultimodal(nn.Module):
         activation_name = model_cfg.get("activation", "elu")
         joint_embedding_dim = sum(self.branch_output_dims.values())
 
+        recurrent_cfg = model_cfg.get("recurrent", {})
+        self.is_recurrent = bool(recurrent_cfg.get("enabled", False))
+        self.recurrent_hidden_size = int(
+            recurrent_cfg.get("hidden_size", 256)
+        )
+        if self.is_recurrent:
+            if self.recurrent_hidden_size < 1:
+                raise ValueError("recurrent.hidden_size must be positive")
+            self.recurrent_memory = nn.GRUCell(
+                input_size=joint_embedding_dim,
+                hidden_size=self.recurrent_hidden_size,
+            )
+            for weight in (
+                self.recurrent_memory.weight_ih,
+                self.recurrent_memory.weight_hh,
+            ):
+                for gate_weight in weight.chunk(3, dim=0):
+                    nn.init.orthogonal_(gate_weight)
+            nn.init.zeros_(self.recurrent_memory.bias_ih)
+            nn.init.zeros_(self.recurrent_memory.bias_hh)
+            self.recurrent_normalizer = nn.LayerNorm(
+                self.recurrent_hidden_size
+            )
+            policy_input_dim = self.recurrent_hidden_size
+        else:
+            self.recurrent_memory = None
+            self.recurrent_normalizer = nn.Identity()
+            policy_input_dim = joint_embedding_dim
+
         self.actor = self._build_mlp(
-            input_dim=joint_embedding_dim,
+            input_dim=policy_input_dim,
             hidden_dims=actor_hidden_dims,
             output_dim=actions_shape[0],
             activation_name=activation_name,
             output_gain=0.01,
         )
         self.critic = self._build_mlp(
-            input_dim=joint_embedding_dim,
+            input_dim=policy_input_dim,
             hidden_dims=critic_hidden_dims,
             output_dim=1,
             activation_name=activation_name,
             output_gain=1.0,
         )
 
-        self.log_std = nn.Parameter(
-            np.log(initial_std) * torch.ones(*actions_shape)
+        std_cfg = dict(model_cfg.get("state_dependent_std", {}))
+        std_cfg.update(tactile_cfg.get("policy_noise", {}))
+        self.state_dependent_std = bool(
+            std_cfg.get("enabled", False)
         )
+        initial_std = float(std_cfg.get("initial", initial_std))
+        minimum_std = float(std_cfg.get("minimum", 0.05))
+        maximum_std = float(std_cfg.get("maximum", 1.0))
+        if not 0.0 < minimum_std < maximum_std:
+            raise ValueError(
+                "state_dependent_std requires 0 < minimum < maximum"
+            )
+        if not minimum_std <= initial_std <= maximum_std:
+            raise ValueError(
+                "init_noise_std must be within the configured std limits"
+            )
+        self.minimum_log_std = float(np.log(minimum_std))
+        self.maximum_log_std = float(np.log(maximum_std))
+        self.initial_action_std = initial_std
+        self.minimum_action_std = minimum_std
+        self.maximum_action_std = maximum_std
+        if self.state_dependent_std:
+            self.log_std_head = nn.Linear(
+                policy_input_dim, actions_shape[0]
+            )
+            nn.init.zeros_(self.log_std_head.weight)
+            nn.init.constant_(self.log_std_head.bias, np.log(initial_std))
+            self.register_parameter("log_std", None)
+        else:
+            self.log_std_head = None
+            self.log_std = nn.Parameter(
+                np.log(initial_std) * torch.ones(*actions_shape)
+            )
 
     @staticmethod
     def _build_mlp(
@@ -770,44 +880,123 @@ class ActorCriticMultimodal(nn.Module):
 
         return torch.cat(embeddings, dim=1)
 
+    def initial_recurrent_state(self, batch_size, device=None):
+        if not self.is_recurrent:
+            return None
+        if device is None:
+            device = next(self.parameters()).device
+        return torch.zeros(
+            batch_size,
+            self.recurrent_hidden_size,
+            device=device,
+        )
 
-    def action_distribution(self, actions_mean):
-        action_std = self.log_std.exp()
-        scale_tril = torch.diag(action_std)
-        return MultivariateNormal(actions_mean, scale_tril=scale_tril)
+    def apply_recurrent_memory(
+        self,
+        joint_embedding,
+        recurrent_hidden_states,
+    ):
+        if not self.is_recurrent:
+            return joint_embedding, None
+        if recurrent_hidden_states is None:
+            raise ValueError(
+                "A recurrent hidden state is required by this policy"
+            )
+        next_hidden_states = self.recurrent_memory(
+            joint_embedding,
+            recurrent_hidden_states,
+        )
+        return (
+            self.recurrent_normalizer(next_hidden_states),
+            next_hidden_states,
+        )
+
+    def action_parameters(self, policy_features):
+        actions_mean = self.actor(policy_features)
+        if self.state_dependent_std:
+            action_log_std = torch.clamp(
+                self.log_std_head(policy_features),
+                min=self.minimum_log_std,
+                max=self.maximum_log_std,
+            )
+        else:
+            action_log_std = self.log_std.expand_as(actions_mean)
+        return actions_mean, action_log_std
+
+    @staticmethod
+    def action_distribution(actions_mean, action_log_std):
+        return Independent(
+            Normal(actions_mean, action_log_std.exp()),
+            1,
+        )
 
     def forward(self):
         raise NotImplementedError
 
     @torch.no_grad()
-    def act(self, observations):
+    def act(self, observations, recurrent_hidden_states=None):
         joint_embedding = self.encode_observations(observations)
-        actions_mean = self.actor(joint_embedding)
-        distribution = self.action_distribution(actions_mean)
+        policy_features, next_hidden_states = self.apply_recurrent_memory(
+            joint_embedding,
+            recurrent_hidden_states,
+        )
+        actions_mean, action_log_std = self.action_parameters(
+            policy_features
+        )
+        distribution = self.action_distribution(
+            actions_mean, action_log_std
+        )
         actions = distribution.sample()
         actions_log_prob = distribution.log_prob(actions)
-        value = self.critic(joint_embedding)
+        value = self.critic(policy_features)
 
-        return (
+        result = (
             actions.detach(),
             actions_log_prob.detach(),
             value.detach(),
             actions_mean.detach(),
-            self.log_std.repeat(actions_mean.shape[0], 1).detach(),
+            action_log_std.detach(),
             observations[:, :self.prop_dim].detach(),
             observations[:, self.prop_dim:].detach(),
         )
+        if self.is_recurrent:
+            return result + (next_hidden_states.detach(),)
+        return result
 
     @torch.no_grad()
-    def act_inference(self, observations):
+    def act_inference(self, observations, recurrent_hidden_states=None):
         joint_embedding = self.encode_observations(observations)
-        return self.actor(joint_embedding)
+        policy_features, next_hidden_states = self.apply_recurrent_memory(
+            joint_embedding,
+            recurrent_hidden_states,
+        )
+        actions_mean = self.actor(policy_features)
+        if self.is_recurrent:
+            return actions_mean, next_hidden_states
+        return actions_mean
+
+    @torch.no_grad()
+    def get_value(self, observations, recurrent_hidden_states=None):
+        joint_embedding = self.encode_observations(observations)
+        policy_features, _ = self.apply_recurrent_memory(
+            joint_embedding,
+            recurrent_hidden_states,
+        )
+        return self.critic(policy_features)
 
     def evaluate(self, obs_features, state, actions):
+        if self.is_recurrent:
+            raise RuntimeError(
+                "Use evaluate_recurrent for a recurrent policy"
+            )
         observations = torch.cat((state, obs_features), dim=1)
         joint_embedding = self.encode_observations(observations)
-        actions_mean = self.actor(joint_embedding)
-        distribution = self.action_distribution(actions_mean)
+        actions_mean, action_log_std = self.action_parameters(
+            joint_embedding
+        )
+        distribution = self.action_distribution(
+            actions_mean, action_log_std
+        )
 
         actions_log_prob = distribution.log_prob(actions)
         entropy = distribution.entropy()
@@ -818,5 +1007,59 @@ class ActorCriticMultimodal(nn.Module):
             entropy,
             value,
             actions_mean,
-            self.log_std.repeat(actions_mean.shape[0], 1),
+            action_log_std,
+        )
+
+    def evaluate_recurrent(
+        self,
+        obs_features,
+        states,
+        actions,
+        initial_hidden_states,
+        dones,
+    ):
+        if not self.is_recurrent:
+            raise RuntimeError(
+                "evaluate_recurrent requires a recurrent policy"
+            )
+        observations = torch.cat((states, obs_features), dim=-1)
+        sequence_length, batch_size = observations.shape[:2]
+        joint_embeddings = self.encode_observations(
+            observations.reshape(sequence_length * batch_size, -1)
+        ).reshape(sequence_length, batch_size, -1)
+
+        hidden_states = initial_hidden_states
+        recurrent_features = []
+        for step in range(sequence_length):
+            if step > 0:
+                hidden_states = hidden_states * (
+                    1.0 - dones[step - 1].float()
+                )
+            policy_features, hidden_states = (
+                self.apply_recurrent_memory(
+                    joint_embeddings[step],
+                    hidden_states,
+                )
+            )
+            recurrent_features.append(policy_features)
+
+        policy_features = torch.stack(
+            recurrent_features, dim=0
+        ).reshape(sequence_length * batch_size, -1)
+        flat_actions = actions.reshape(
+            sequence_length * batch_size, -1
+        )
+        actions_mean, action_log_std = self.action_parameters(
+            policy_features
+        )
+        distribution = self.action_distribution(
+            actions_mean, action_log_std
+        )
+
+        return (
+            distribution.log_prob(flat_actions),
+            distribution.entropy(),
+            self.critic(policy_features),
+            actions_mean,
+            action_log_std,
         )

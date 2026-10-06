@@ -345,6 +345,11 @@ class ShadowHandGraspDexRep(BaseTask):
                 obs_dim["voxel_map"] = (
                     voxel_cfg.get("channels", 2) * voxel_size
                 )
+                local_cfg = self.tactile_cfg["local_voxel"]
+                obs_dim["local_voxel_map"] = (
+                    local_cfg["channels"]
+                    * int(np.prod(local_cfg["grid_size"]))
+                )
             elif self.tactile_experiment == "E4":
                 history_length = self.tactile_cfg["history"]["length"]
                 obs_dim["touch_history"] = (
@@ -729,6 +734,33 @@ class ShadowHandGraspDexRep(BaseTask):
             if not 0.0 <= self.voxel_expiration_threshold <= 1.0:
                 raise ValueError(
                     "tactile.voxel.expiration_threshold must be in [0, 1]"
+                )
+            if self.tactile_experiment == "E3":
+                local_cfg = self.tactile_cfg["local_voxel"]
+                self.local_voxel_grid_size = tuple(local_cfg["grid_size"])
+                if (
+                    len(self.local_voxel_grid_size) != 3
+                    or any(size <= 0 or size % 2 for size in self.local_voxel_grid_size)
+                    or local_cfg["channels"] != 8
+                ):
+                    raise ValueError(
+                        "E3 local_voxel requires three positive even grid sizes "
+                        "and eight channels"
+                    )
+                local_axes = [
+                    torch.arange(size, device=self.device) - size // 2
+                    for size in self.local_voxel_grid_size
+                ]
+                self.local_voxel_offsets = torch.stack(
+                    torch.meshgrid(*local_axes, indexing="ij"), dim=-1
+                ).reshape(1, -1, 3)
+                self.local_voxel_half_size = torch.tensor(
+                    self.local_voxel_grid_size,
+                    device=self.device,
+                    dtype=torch.long,
+                ).div(2, rounding_mode="floor")
+                self.local_voxel_grid_size_tensor = (
+                    self.local_voxel_half_size * 2
                 )
 
     def create_sim(self):
@@ -1221,6 +1253,20 @@ class ShadowHandGraspDexRep(BaseTask):
             self.extras["contact_losses"] = (
                 self.episode_contact_losses
             )
+            self.extras["current_contact"] = (
+                self.binary_touch > 0.5
+            ).any(dim=1).float()
+            self.extras["valid_grasp"] = (
+                self.valid_grasp_mask.float()
+            )
+            self.extras["upward_action_supervision_mask"] = (
+                self.valid_grasp_mask
+                & (
+                    self.object_pos[:, 2] - self.episode_object_start_height
+                    < self.touch_lift_target_height
+                )
+                & (self.reset_buf == 0)
+            ).float()
 
     def compute_reach_progress_reward(self):
         palm_distance = torch.norm(
@@ -1314,14 +1360,14 @@ class ShadowHandGraspDexRep(BaseTask):
         )
 
         touch_count = current_finger_touch.sum(dim=1)
-        stable_touch_count = torch.logical_and(
+        stable_finger_touch = torch.logical_and(
             current_finger_touch > 0.5,
             previous_finger_touch > 0.5,
-        ).sum(dim=1).float()
+        )
         has_grasp_contact = self.valid_grasp_mask
-        multi_contact_strength = torch.clamp(
-            stable_touch_count - 1.0,
-            min=0.0,
+        multi_contact_strength = (
+            stable_finger_touch[:, 4].float()
+            * stable_finger_touch[:, :4].sum(dim=1).float()
         )
         has_contact = current_touch.any(dim=1)
         lost_contacts = torch.logical_and(
@@ -1873,7 +1919,6 @@ class ShadowHandGraspDexRep(BaseTask):
         if not self.relative_object_position_enabled:
             return torch.zeros_like(self.right_hand_pos)
         if self.relative_object_position_source == "tactile_estimate":
-            self.update_tactile_object_position_estimate()
             estimate_is_valid = (
                 self.tactile_object_position_quality
                 >= self.tactile_position_minimum_quality
@@ -2065,8 +2110,90 @@ class ShadowHandGraspDexRep(BaseTask):
 
         return self.voxel_map.flatten(1)
 
+    def compute_local_voxel_map(self, touch_sensor_positions):
+        cell_size = (
+            self.voxel_upper - self.voxel_lower
+        ) / self.voxel_grid_size_tensor
+        palm_index = torch.floor(
+            (self.right_hand_pos - self.voxel_lower) / cell_size
+        ).long()
+        world_indices = palm_index.unsqueeze(1) + self.local_voxel_offsets
+        inside_world = (
+            (world_indices >= 0)
+            & (world_indices < self.voxel_grid_size_tensor)
+        ).all(dim=-1)
+        clipped_indices = torch.minimum(
+            torch.maximum(world_indices, torch.zeros_like(world_indices)),
+            self.voxel_grid_size_tensor - 1,
+        )
+        world_linear = (
+            (clipped_indices[..., 0] * self.voxel_grid_size[1]
+             + clipped_indices[..., 1]) * self.voxel_grid_size[2]
+            + clipped_indices[..., 2]
+        )
+        local_shape = (self.num_envs, *self.local_voxel_grid_size)
+        local_map = torch.zeros(
+            self.num_envs, 8, *self.local_voxel_grid_size,
+            device=self.device, dtype=self.voxel_map.dtype,
+        )
+        world_map = self.voxel_map.flatten(2)
+        for channel in range(2):
+            inherited = world_map[:, channel].gather(1, world_linear)
+            inherited = inherited.masked_fill(
+                ~inside_world, -1.0 if channel == 0 else 0.0
+            )
+            local_map[:, channel] = inherited.reshape(local_shape)
+
+        sensor_indices = torch.floor(
+            (touch_sensor_positions - self.voxel_lower) / cell_size
+        ).long() - palm_index.unsqueeze(1) + self.local_voxel_half_size
+        inside_local = (
+            (sensor_indices >= 0)
+            & (sensor_indices < self.local_voxel_grid_size_tensor)
+        ).all(dim=-1)
+        sensor_linear = (
+            (sensor_indices[..., 0] * self.local_voxel_grid_size[1]
+             + sensor_indices[..., 1]) * self.local_voxel_grid_size[2]
+            + sensor_indices[..., 2]
+        ).clamp(0, int(np.prod(self.local_voxel_grid_size)) - 1)
+        for finger in range(5):
+            finger_valid = (
+                inside_local
+                & self.touch_sensor_finger_membership[finger].unsqueeze(0)
+            )
+            local_map[:, finger + 2].flatten(1).scatter_add_(
+                1, sensor_linear, finger_valid.float()
+            )
+        local_map[:, 2:7].clamp_(max=1.0)
+
+        estimate_indices = torch.floor(
+            (self.tactile_object_position_estimate - self.voxel_lower)
+            / cell_size
+        ).long() - palm_index + self.local_voxel_half_size
+        valid_estimate = (
+            (self.tactile_object_position_quality
+             >= self.tactile_position_minimum_quality)
+            & (estimate_indices >= 0).all(dim=-1)
+            & (estimate_indices < self.local_voxel_grid_size_tensor).all(dim=-1)
+        )
+        estimate_linear = (
+            (estimate_indices[:, 0] * self.local_voxel_grid_size[1]
+             + estimate_indices[:, 1]) * self.local_voxel_grid_size[2]
+            + estimate_indices[:, 2]
+        ).clamp(0, int(np.prod(self.local_voxel_grid_size)) - 1)
+        local_map[:, 7].flatten(1).scatter_(
+            1, estimate_linear.unsqueeze(1), valid_estimate.float().unsqueeze(1)
+        )
+        return local_map.flatten(1)
+
     def compute_tactile_observations(self):
         self.compute_binary_touch()
+        if (
+            self.relative_object_position_source == "tactile_estimate"
+            and (self.relative_object_position_enabled
+                 or self.tactile_experiment == "E3")
+        ):
+            self.update_tactile_object_position_estimate()
         (
             proprioception,
             proprioception_core,
@@ -2126,6 +2253,9 @@ class ShadowHandGraspDexRep(BaseTask):
         elif self.tactile_experiment == "E3":
             observation_branches.append(
                 self.update_voxel_map(touch_sensor_positions)
+            )
+            observation_branches.append(
+                self.compute_local_voxel_map(touch_sensor_positions)
             )
         elif self.tactile_experiment == "E4":
             observation_branches.append(
