@@ -27,6 +27,7 @@ _MODEL_FUNCS = {
 
 _TACTILE_EPISODE_METRICS = {
     "contact_found": ("Contact discovery rate", 100.0),
+    "estimate_found": ("Tactile estimate discovery rate", 100.0),
     "first_contact_step": ("Mean first-contact step", 1.0),
     "multi_contact": ("Multi-contact episode rate", 100.0),
     "lifted": ("Lift episode rate", 100.0),

@@ -10,6 +10,7 @@ env:
   numEnvs: 1024
   envSpacing: 1.5
   episodeLength: 400
+  ppoRolloutSteps: 32
   enableDebugVis: False
   aggregateMode: 1
 
@@ -37,8 +38,8 @@ env:
   resetDofPosRandomInterval: 0.0
   resetDofVelRandomInterval: 0.0
 
-  # Scale for signed hand-object distance progress.
-  distRewardScale: 2
+  # Weak oracle distance progress; tactile-estimate progress is configured below.
+  distRewardScale: 0.5
   transition_scale: 0.15
   orientation_scale: 0.1
   rotRewardScale: 1.0
@@ -148,11 +149,9 @@ env:
       minimum_height_above_table: 0.005
 
     reward:
-      # Shared by E1-E5. All terms are dense and use five-finger
-      # contact aggregation rather than counting individual link sensors.
-      # Per-step reward for each non-thumb finger in stable contact,
-      # provided the thumb is also in stable contact.
-      multi_contact_hold: 0.02
+      # One finger: 0.01; two or more: 0.02; valid grasp adds 0.02.
+      per_finger_contact: 0.01
+      valid_grasp_contact: 0.02
       # A lift-ready grasp requires thumb + any other finger for this
       # many consecutive control steps.
       valid_grasp_steps: 3
@@ -160,8 +159,7 @@ env:
       # grasp and only until the object reaches the lift target.
       upward_action: 0.075
       upward_action_saturation: 0.3
-      # Per-step dense height reward, paid only while at least two
-      # different fingers maintain contact across two simulation steps.
+      # Per-step dense height reward, paid after a valid grasp.
       # At the 12 cm target this term is 0.25.
       lift_height: 0.25
       # Required object height increase relative to reset height.
@@ -171,15 +169,15 @@ env:
       # Reset after this many consecutive steps above target.
       lift_hold_steps: 10
 
-      # Signed reach progress uses the palm and the mean distance of
-      # distal, middle and proximal finger-link keypoints. It is not
-      # reduced after contact.
+      # Signed progress toward the tactile estimate, only when valid.
+      estimated_reach: 1.0
+      # Distance progress uses the palm and finger-link keypoints.
       reach_palm_weight: 0.5
       reach_distal_weight: 1.0
       reach_middle_weight: 0.25
       reach_proximal_weight: 0.0
 
-      # Reward newly explored free voxels only before the first contact.
+      # Reward newly explored free voxels until the first valid estimate.
       # Duplicate sensor observations in one step count as one voxel.
       voxel_exploration: 0.01
       voxel_exploration_new_voxel_cap: 4

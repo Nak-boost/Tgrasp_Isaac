@@ -82,6 +82,9 @@ def load_cfg(args, use_rlg_config=False):
     with open(os.path.join(os.getcwd(), args.cfg_env), 'r') as f:
         cfg = yaml.load(f, Loader=yaml.SafeLoader)
 
+    if args.algo == "ppo1" and "ppoRolloutSteps" in cfg["env"]:
+        cfg_train["learn"]["nsteps"] = cfg["env"]["ppoRolloutSteps"]
+
     if args.history_length > 0:
         if args.history_length not in (4, 8, 16):
             raise ValueError("--history_length must be 4, 8, or 16")

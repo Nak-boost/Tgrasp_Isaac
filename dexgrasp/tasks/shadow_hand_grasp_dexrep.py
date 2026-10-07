@@ -574,6 +574,15 @@ class ShadowHandGraspDexRep(BaseTask):
             self.touch_multi_contact_hold_reward_scale = (
                 touch_reward_cfg.get("multi_contact_hold", 0.02)
             )
+            self.touch_contact_per_finger_reward_scale = float(
+                touch_reward_cfg.get("per_finger_contact", 0.01)
+            )
+            self.touch_valid_grasp_contact_reward_scale = float(
+                touch_reward_cfg.get("valid_grasp_contact", 0.02)
+            )
+            self.estimated_reach_reward_scale = float(
+                touch_reward_cfg.get("estimated_reach", 0.0)
+            )
             self.valid_grasp_required_steps = int(
                 touch_reward_cfg.get("valid_grasp_steps", 3)
             )
@@ -636,11 +645,26 @@ class ShadowHandGraspDexRep(BaseTask):
                     "tactile.reward.voxel_exploration_new_voxel_cap "
                     "must be positive"
                 )
+            if (
+                self.touch_contact_per_finger_reward_scale < 0.0
+                or self.touch_valid_grasp_contact_reward_scale < 0.0
+                or self.estimated_reach_reward_scale < 0.0
+            ):
+                raise ValueError("tactile contact and reach rewards must be non-negative")
+            if (
+                self.tactile_experiment == "E3"
+                and self.estimated_reach_reward_scale > 0.0
+                and self.relative_object_position_source != "tactile_estimate"
+            ):
+                raise ValueError("E3 estimated reach requires tactile_estimate")
 
             self.episode_had_contact = torch.zeros(
                 self.num_envs,
                 device=self.device,
                 dtype=torch.bool,
+            )
+            self.episode_had_valid_estimate = torch.zeros_like(
+                self.episode_had_contact
             )
             self.episode_had_multi_contact = torch.zeros_like(
                 self.episode_had_contact
@@ -680,6 +704,9 @@ class ShadowHandGraspDexRep(BaseTask):
                 self.num_envs,
                 device=self.device,
                 dtype=torch.bool,
+            )
+            self.previous_reach_keypoints = torch.zeros(
+                self.num_envs, 16, 3, device=self.device,
             )
             self.consecutive_lift_hold_steps = torch.zeros_like(
                 self.episode_contact_steps
@@ -1228,6 +1255,8 @@ class ShadowHandGraspDexRep(BaseTask):
         if self.tactile_enabled:
             self.rew_buf.add_(self.compute_reach_progress_reward())
             self.rew_buf.add_(self.compute_touch_reward())
+            if self.tactile_experiment == "E3":
+                self.rew_buf.add_(self.voxel_exploration_reward)
 
         self.extras['successes'] = self.successes
         self.extras['current_successes'] = self.current_successes
@@ -1236,6 +1265,10 @@ class ShadowHandGraspDexRep(BaseTask):
             self.extras["contact_found"] = (
                 self.episode_had_contact.float()
             )
+            if self.tactile_experiment == "E3":
+                self.extras["estimate_found"] = (
+                    self.episode_had_valid_estimate.float()
+                )
             self.extras["first_contact_step"] = (
                 self.episode_first_contact_step
             )
@@ -1268,12 +1301,18 @@ class ShadowHandGraspDexRep(BaseTask):
                 & (self.reset_buf == 0)
             ).float()
 
-    def compute_reach_progress_reward(self):
-        palm_distance = torch.norm(
-            self.object_handle_pos - self.right_hand_pos,
-            p=2,
-            dim=1,
+    def reach_distance_to_target(self, keypoints, target):
+        distances = torch.norm(
+            keypoints - target.unsqueeze(1), p=2, dim=2,
         )
+        return (
+            self.reach_palm_weight * distances[:, 0]
+            + self.reach_distal_weight * distances[:, 1:6].mean(dim=1)
+            + self.reach_middle_weight * distances[:, 6:11].mean(dim=1)
+            + self.reach_proximal_weight * distances[:, 11:16].mean(dim=1)
+        )
+
+    def compute_reach_progress_reward(self):
         distal_keypoints = torch.stack(
             (
                 self.right_hand_ff_pos,
@@ -1286,37 +1325,44 @@ class ShadowHandGraspDexRep(BaseTask):
         )
         middle_keypoints = self.dexrep_hand_state[:, 5:10, 0:3]
         proximal_keypoints = self.dexrep_hand_state[:, 10:15, 0:3]
-
-        distal_distance = torch.norm(
-            distal_keypoints - self.object_handle_pos.unsqueeze(1),
-            p=2,
-            dim=2,
-        ).mean(dim=1)
-        middle_distance = torch.norm(
-            middle_keypoints - self.object_handle_pos.unsqueeze(1),
-            p=2,
-            dim=2,
-        ).mean(dim=1)
-        proximal_distance = torch.norm(
-            proximal_keypoints - self.object_handle_pos.unsqueeze(1),
-            p=2,
-            dim=2,
-        ).mean(dim=1)
-        reach_distance = (
-            self.reach_palm_weight * palm_distance
-            + self.reach_distal_weight * distal_distance
-            + self.reach_middle_weight * middle_distance
-            + self.reach_proximal_weight * proximal_distance
+        keypoints = torch.cat(
+            (
+                self.right_hand_pos.unsqueeze(1),
+                distal_keypoints,
+                middle_keypoints,
+                proximal_keypoints,
+            ),
+            dim=1,
         )
-
+        reach_distance = self.reach_distance_to_target(
+            keypoints, self.object_handle_pos,
+        )
         reach_progress = torch.where(
             self.previous_reach_distance_valid,
             self.previous_reach_distance - reach_distance,
             torch.zeros_like(reach_distance),
         )
+        reward = self.dist_reward_scale * reach_progress
+        if self.tactile_experiment == "E3":
+            estimate = self.tactile_object_position_estimate
+            estimated_progress = (
+                self.reach_distance_to_target(
+                    self.previous_reach_keypoints, estimate,
+                )
+                - self.reach_distance_to_target(keypoints, estimate)
+            )
+            estimated_progress = torch.where(
+                self.previous_reach_distance_valid
+                & (self.tactile_object_position_quality
+                   >= self.tactile_position_minimum_quality),
+                estimated_progress,
+                torch.zeros_like(estimated_progress),
+            )
+            reward = reward + self.estimated_reach_reward_scale * estimated_progress
         self.previous_reach_distance.copy_(reach_distance)
+        self.previous_reach_keypoints.copy_(keypoints)
         self.previous_reach_distance_valid[:] = True
-        return self.dist_reward_scale * reach_progress
+        return reward
 
     def aggregate_finger_touch(self, touch):
         touch_active = touch > 0.5
@@ -1360,15 +1406,24 @@ class ShadowHandGraspDexRep(BaseTask):
         )
 
         touch_count = current_finger_touch.sum(dim=1)
-        stable_finger_touch = torch.logical_and(
-            current_finger_touch > 0.5,
-            previous_finger_touch > 0.5,
-        )
         has_grasp_contact = self.valid_grasp_mask
-        multi_contact_strength = (
-            stable_finger_touch[:, 4].float()
-            * stable_finger_touch[:, :4].sum(dim=1).float()
-        )
+        if self.tactile_experiment in {"E3", "E4"}:
+            contact_reward = (
+                self.touch_contact_per_finger_reward_scale
+                * torch.clamp(touch_count, max=2.0)
+                + self.touch_valid_grasp_contact_reward_scale
+                * has_grasp_contact.float()
+            )
+        else:
+            stable_finger_touch = torch.logical_and(
+                current_finger_touch > 0.5,
+                previous_finger_touch > 0.5,
+            )
+            contact_reward = (
+                self.touch_multi_contact_hold_reward_scale
+                * stable_finger_touch[:, 4].float()
+                * stable_finger_touch[:, :4].sum(dim=1).float()
+            )
         has_contact = current_touch.any(dim=1)
         lost_contacts = torch.logical_and(
             previous_finger_touch > 0.5,
@@ -1421,15 +1476,12 @@ class ShadowHandGraspDexRep(BaseTask):
             * below_lift_target.float()
         )
         touch_reward = (
-            self.touch_multi_contact_hold_reward_scale
-            * multi_contact_strength
+            contact_reward
             + upward_action_reward
             + self.touch_lift_height_reward_scale
             * lift_fraction
             * has_grasp_contact.float()
         )
-        if self.tactile_experiment == "E3":
-            touch_reward.add_(self.voxel_exploration_reward)
 
         self.previous_binary_touch.copy_(self.binary_touch)
         return touch_reward
@@ -2080,17 +2132,16 @@ class ShadowHandGraspDexRep(BaseTask):
             step_free > 0,
             torch.logical_not(current_contact),
         )
-        current_has_contact = object_touch.any(dim=1)
-        searching_without_contact = torch.logical_and(
-            torch.logical_not(self.episode_had_contact),
-            torch.logical_not(current_has_contact),
+        self.episode_had_valid_estimate.logical_or_(
+            self.tactile_object_position_quality
+            >= self.tactile_position_minimum_quality
         )
         newly_explored_free = torch.logical_and(
             current_free,
             occupancy_map < -0.5,
         )
         newly_explored_free.logical_and_(
-            searching_without_contact.unsqueeze(1)
+            torch.logical_not(self.episode_had_valid_estimate).unsqueeze(1)
         )
         new_voxel_count = newly_explored_free.sum(dim=1).float()
         self.voxel_exploration_reward.copy_(
@@ -2485,6 +2536,7 @@ class ShadowHandGraspDexRep(BaseTask):
             self.consecutive_valid_grasp_steps[env_ids] = 0
             self.valid_grasp_mask[env_ids] = False
             self.episode_had_contact[env_ids] = False
+            self.episode_had_valid_estimate[env_ids] = False
             self.episode_had_multi_contact[env_ids] = False
             self.episode_had_lift[env_ids] = False
             self.episode_first_contact_step[env_ids] = -1.0
@@ -2499,6 +2551,7 @@ class ShadowHandGraspDexRep(BaseTask):
             )
             self.previous_reach_distance[env_ids] = 0
             self.previous_reach_distance_valid[env_ids] = False
+            self.previous_reach_keypoints[env_ids] = 0
             self.consecutive_lift_hold_steps[env_ids] = 0
             self.touch_history[env_ids] = 0
             self.voxel_map[env_ids] = 0
