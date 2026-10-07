@@ -145,8 +145,8 @@ env:
       # Hysteresis avoids rapid binary-touch switching near threshold.
       on_threshold: 1.0
       off_threshold: 0.5
-      # Ignore contacts whose sensor centre is within 5 mm of the table.
-      minimum_height_above_table: 0.005
+      # Ignore contacts whose sensor centre is within 15 mm of the table.
+      minimum_height_above_table: 0.015
 
     reward:
       # One finger: 0.01; two or more: 0.02; valid grasp adds 0.02.
