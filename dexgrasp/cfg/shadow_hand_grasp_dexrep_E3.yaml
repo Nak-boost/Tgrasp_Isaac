@@ -9,7 +9,7 @@ env:
   env_name: "shadow_hand_grasp_dexrep"
   numEnvs: 1024
   envSpacing: 1.5
-  episodeLength: 400
+  episodeLength: 800
   ppoRolloutSteps: 32
   enableDebugVis: False
   aggregateMode: 1
@@ -181,6 +181,7 @@ env:
       # Duplicate sensor observations in one step count as one voxel.
       voxel_exploration: 0.01
       voxel_exploration_new_voxel_cap: 4
+      voxel_exploration_max_height_above_table: 0.20
 
     history:
       # Each frame contains:
@@ -194,7 +195,7 @@ env:
       # Channel 1: recency (1 current, decays toward 0).
       channels: 2
       grid_size: [32, 32, 16]
-      lower: [-0.35, -0.35, 0.55]
+      lower: [-0.35, -0.35, 0.60]
       upper: [0.35, 0.35, 0.95]
 
       # Expired observations become unknown again.
@@ -209,6 +210,7 @@ env:
     local_voxel:
       # World-aligned palm-centered crop of the global map.
       # Occupancy, recency, five finger-location channels, tactile estimate.
+      enabled: False
       channels: 8
       grid_size: [12, 12, 8]
 

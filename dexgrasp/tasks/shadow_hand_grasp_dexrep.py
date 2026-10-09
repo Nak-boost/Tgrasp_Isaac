@@ -69,6 +69,9 @@ class ShadowHandGraspDexRep(BaseTask):
         self.tactile_experiment = self.tactile_cfg.get(
             "experiment", "E1"
         ).upper()
+        self.local_voxel_enabled = bool(
+            self.tactile_cfg.get("local_voxel", {}).get("enabled", True)
+        )
 
         self.fingertips = [
             "robot0:ffdistal",
@@ -345,11 +348,12 @@ class ShadowHandGraspDexRep(BaseTask):
                 obs_dim["voxel_map"] = (
                     voxel_cfg.get("channels", 2) * voxel_size
                 )
-                local_cfg = self.tactile_cfg["local_voxel"]
-                obs_dim["local_voxel_map"] = (
-                    local_cfg["channels"]
-                    * int(np.prod(local_cfg["grid_size"]))
-                )
+                if self.local_voxel_enabled:
+                    local_cfg = self.tactile_cfg["local_voxel"]
+                    obs_dim["local_voxel_map"] = (
+                        local_cfg["channels"]
+                        * int(np.prod(local_cfg["grid_size"]))
+                    )
             elif self.tactile_experiment == "E4":
                 history_length = self.tactile_cfg["history"]["length"]
                 obs_dim["touch_history"] = (
@@ -624,6 +628,11 @@ class ShadowHandGraspDexRep(BaseTask):
                     "voxel_exploration_new_voxel_cap", 4
                 )
             )
+            self.voxel_exploration_max_height_above_table = float(
+                touch_reward_cfg.get(
+                    "voxel_exploration_max_height_above_table", 0.20
+                )
+            )
             if self.touch_lift_hold_steps < 1:
                 raise ValueError(
                     "tactile.reward.lift_hold_steps must be positive"
@@ -644,6 +653,14 @@ class ShadowHandGraspDexRep(BaseTask):
                 raise ValueError(
                     "tactile.reward.voxel_exploration_new_voxel_cap "
                     "must be positive"
+                )
+            if (
+                self.voxel_exploration_max_height_above_table
+                <= self.touch_minimum_height_above_table
+            ):
+                raise ValueError(
+                    "tactile.reward.voxel_exploration_max_height_above_table "
+                    "must exceed tactile.touch.minimum_height_above_table"
                 )
             if (
                 self.touch_contact_per_finger_reward_scale < 0.0
@@ -748,6 +765,26 @@ class ShadowHandGraspDexRep(BaseTask):
                     "occupancy and recency"
                 )
             self.voxel_map[:, 0].fill_(-1.0)
+            voxel_height = (
+                self.voxel_upper[2] - self.voxel_lower[2]
+            ) / self.voxel_grid_size[2]
+            voxel_lower_edges = self.voxel_lower[2] + torch.arange(
+                self.voxel_grid_size[2], device=self.device
+            ) * voxel_height
+            reward_lower_z = (
+                self.table_top_z + self.touch_minimum_height_above_table
+            )
+            reward_upper_z = (
+                self.table_top_z
+                + self.voxel_exploration_max_height_above_table
+            )
+            eligible_z = (
+                (voxel_lower_edges >= reward_lower_z)
+                & (voxel_lower_edges + voxel_height <= reward_upper_z)
+            )
+            self.voxel_exploration_z_mask = eligible_z.view(1, 1, 1, -1).expand(
+                1, *self.voxel_grid_size
+            ).flatten(1)
             self.voxel_recency_decay = float(
                 voxel_cfg.get("recency_decay", 0.98)
             )
@@ -762,7 +799,7 @@ class ShadowHandGraspDexRep(BaseTask):
                 raise ValueError(
                     "tactile.voxel.expiration_threshold must be in [0, 1]"
                 )
-            if self.tactile_experiment == "E3":
+            if self.tactile_experiment == "E3" and self.local_voxel_enabled:
                 local_cfg = self.tactile_cfg["local_voxel"]
                 self.local_voxel_grid_size = tuple(local_cfg["grid_size"])
                 if (
@@ -2143,6 +2180,7 @@ class ShadowHandGraspDexRep(BaseTask):
         newly_explored_free.logical_and_(
             torch.logical_not(self.episode_had_valid_estimate).unsqueeze(1)
         )
+        newly_explored_free.logical_and_(self.voxel_exploration_z_mask)
         new_voxel_count = newly_explored_free.sum(dim=1).float()
         self.voxel_exploration_reward.copy_(
             self.voxel_exploration_reward_scale
@@ -2305,9 +2343,10 @@ class ShadowHandGraspDexRep(BaseTask):
             observation_branches.append(
                 self.update_voxel_map(touch_sensor_positions)
             )
-            observation_branches.append(
-                self.compute_local_voxel_map(touch_sensor_positions)
-            )
+            if self.local_voxel_enabled:
+                observation_branches.append(
+                    self.compute_local_voxel_map(touch_sensor_positions)
+                )
         elif self.tactile_experiment == "E4":
             observation_branches.append(
                 self.update_touch_history(
