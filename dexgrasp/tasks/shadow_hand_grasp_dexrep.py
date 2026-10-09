@@ -624,6 +624,11 @@ class ShadowHandGraspDexRep(BaseTask):
                     "voxel_exploration_new_voxel_cap", 4
                 )
             )
+            self.voxel_exploration_max_height_above_table = float(
+                touch_reward_cfg.get(
+                    "voxel_exploration_max_height_above_table", 0.20
+                )
+            )
             if self.touch_lift_hold_steps < 1:
                 raise ValueError(
                     "tactile.reward.lift_hold_steps must be positive"
@@ -644,6 +649,14 @@ class ShadowHandGraspDexRep(BaseTask):
                 raise ValueError(
                     "tactile.reward.voxel_exploration_new_voxel_cap "
                     "must be positive"
+                )
+            if (
+                self.voxel_exploration_max_height_above_table
+                <= self.touch_minimum_height_above_table
+            ):
+                raise ValueError(
+                    "tactile.reward.voxel_exploration_max_height_above_table "
+                    "must exceed tactile.touch.minimum_height_above_table"
                 )
             if (
                 self.touch_contact_per_finger_reward_scale < 0.0
@@ -748,6 +761,26 @@ class ShadowHandGraspDexRep(BaseTask):
                     "occupancy and recency"
                 )
             self.voxel_map[:, 0].fill_(-1.0)
+            voxel_height = (
+                self.voxel_upper[2] - self.voxel_lower[2]
+            ) / self.voxel_grid_size[2]
+            voxel_lower_edges = self.voxel_lower[2] + torch.arange(
+                self.voxel_grid_size[2], device=self.device
+            ) * voxel_height
+            reward_lower_z = (
+                self.table_top_z + self.touch_minimum_height_above_table
+            )
+            reward_upper_z = (
+                self.table_top_z
+                + self.voxel_exploration_max_height_above_table
+            )
+            eligible_z = (
+                (voxel_lower_edges >= reward_lower_z)
+                & (voxel_lower_edges + voxel_height <= reward_upper_z)
+            )
+            self.voxel_exploration_z_mask = eligible_z.view(1, 1, 1, -1).expand(
+                1, *self.voxel_grid_size
+            ).flatten(1)
             self.voxel_recency_decay = float(
                 voxel_cfg.get("recency_decay", 0.98)
             )
@@ -2143,6 +2176,7 @@ class ShadowHandGraspDexRep(BaseTask):
         newly_explored_free.logical_and_(
             torch.logical_not(self.episode_had_valid_estimate).unsqueeze(1)
         )
+        newly_explored_free.logical_and_(self.voxel_exploration_z_mask)
         new_voxel_count = newly_explored_free.sum(dim=1).float()
         self.voxel_exploration_reward.copy_(
             self.voxel_exploration_reward_scale
