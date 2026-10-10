@@ -63,15 +63,20 @@ class RegionExplorationReward:
         self.centers = torch.stack(
             torch.meshgrid(*region_axes, indexing="ij"), dim=-1
         ).reshape(9, 2)
+        self.region_half_size = (search_upper - search_lower) / 6
         self.coverage = torch.zeros(num_envs, 9, device=device)
         self.explored_regions = torch.zeros(num_envs, 9, dtype=torch.bool, device=device)
         self.target = torch.zeros(num_envs, 2, device=device)
         self.target_valid = torch.zeros(num_envs, dtype=torch.bool, device=device)
         self.previous_distance = torch.zeros(num_envs, device=device)
 
+    def distance_to_region(self, palm_xy, centers):
+        offsets = (torch.abs(palm_xy - centers) - self.region_half_size).clamp(min=0)
+        return torch.norm(offsets, dim=-1)
+
     @torch.no_grad()
     def update(self, occupancy, palm_xy, search_active):
-        current_distance = torch.norm(palm_xy - self.target, dim=1)
+        current_distance = self.distance_to_region(palm_xy, self.target)
         reward = torch.where(
             self.target_valid & search_active,
             self.scale * (self.previous_distance - current_distance),
@@ -86,7 +91,9 @@ class RegionExplorationReward:
             self.coverage >= self.coverage_threshold - 1.0e-6
         )
         candidates = ~self.explored_regions & search_active.unsqueeze(1)
-        distances = torch.norm(palm_xy.unsqueeze(1) - self.centers.unsqueeze(0), dim=-1)
+        distances = self.distance_to_region(
+            palm_xy.unsqueeze(1), self.centers.unsqueeze(0)
+        )
         target_index = distances.masked_fill(~candidates, float("inf")).argmin(dim=1)
         self.target.copy_(self.centers[target_index])
         self.previous_distance.copy_(

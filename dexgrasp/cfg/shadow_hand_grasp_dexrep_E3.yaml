@@ -9,7 +9,7 @@ env:
   env_name: "shadow_hand_grasp_dexrep"
   numEnvs: 1024
   envSpacing: 1.5
-  episodeLength: 800
+  episodeLength: 1600
   ppoRolloutSteps: 32
   enableDebugVis: False
   aggregateMode: 1
