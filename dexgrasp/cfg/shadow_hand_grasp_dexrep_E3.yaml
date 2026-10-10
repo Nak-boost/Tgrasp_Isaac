@@ -182,6 +182,11 @@ env:
       voxel_exploration: 0.01
       voxel_exploration_new_voxel_cap: 4
       voxel_exploration_max_height_above_table: 0.20
+      region_exploration:
+        scale: 1.0
+        coverage_threshold: 0.70
+        height_above_table: 0.05
+        height_layers: 3
 
     history:
       # Each frame contains:
