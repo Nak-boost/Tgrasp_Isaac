@@ -213,6 +213,7 @@ env:
       feedforward_dim: 128
 
     local_voxel:
+      enabled: False
       # World-aligned palm-centered crop of the global map.
       # Occupancy, recency, five finger-location channels, tactile estimate.
       channels: 8

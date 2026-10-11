@@ -67,6 +67,9 @@ class ShadowHandGraspDexRep(BaseTask):
 
         self.tactile_cfg = self.cfg["env"].get("tactile", {})
         self.tactile_enabled = self.tactile_cfg.get("enabled", False)
+        self.local_voxel_enabled = bool(
+            self.tactile_cfg.get("local_voxel", {}).get("enabled", True)
+        )
         self.tactile_experiment = self.tactile_cfg.get(
             "experiment", "E1"
         ).upper()
@@ -346,11 +349,12 @@ class ShadowHandGraspDexRep(BaseTask):
                 obs_dim["voxel_map"] = (
                     voxel_cfg.get("channels", 2) * voxel_size
                 )
-                local_cfg = self.tactile_cfg["local_voxel"]
-                obs_dim["local_voxel_map"] = (
-                    local_cfg["channels"]
-                    * int(np.prod(local_cfg["grid_size"]))
-                )
+                if self.local_voxel_enabled:
+                    local_cfg = self.tactile_cfg["local_voxel"]
+                    obs_dim["local_voxel_map"] = (
+                        local_cfg["channels"]
+                        * int(np.prod(local_cfg["grid_size"]))
+                    )
             elif self.tactile_experiment == "E4":
                 history_length = self.tactile_cfg["history"]["length"]
                 obs_dim["touch_history"] = (
@@ -844,7 +848,7 @@ class ShadowHandGraspDexRep(BaseTask):
                     coverage_threshold=region_cfg.get("coverage_threshold", 0.7),
                     scale=region_cfg["scale"],
                 )
-            if self.tactile_experiment == "E3":
+            if self.tactile_experiment == "E3" and self.local_voxel_enabled:
                 local_cfg = self.tactile_cfg["local_voxel"]
                 self.local_voxel_grid_size = tuple(local_cfg["grid_size"])
                 if (
@@ -2440,9 +2444,10 @@ class ShadowHandGraspDexRep(BaseTask):
             observation_branches.append(
                 self.update_voxel_map(touch_sensor_positions)
             )
-            observation_branches.append(
-                self.compute_local_voxel_map(touch_sensor_positions)
-            )
+            if self.local_voxel_enabled:
+                observation_branches.append(
+                    self.compute_local_voxel_map(touch_sensor_positions)
+                )
         elif self.tactile_experiment == "E4":
             observation_branches.append(
                 self.update_touch_history(
