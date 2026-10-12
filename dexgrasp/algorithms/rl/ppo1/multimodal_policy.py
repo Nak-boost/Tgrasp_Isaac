@@ -236,6 +236,7 @@ class VoxelObservationEncoder(nn.Module):
         attention_heads,
         feedforward_dim,
         embedding_normalization,
+        cnn_initial_stride=4,
     ):
         super().__init__()
 
@@ -253,12 +254,14 @@ class VoxelObservationEncoder(nn.Module):
             raise ValueError(
                 "Voxel token dimension must be divisible by attention heads"
             )
+        if type(cnn_initial_stride) is not int or not 1 <= cnn_initial_stride <= min(grid_size):
+            raise ValueError("Voxel CNN initial stride must fit the grid dimensions")
         self.cnn = nn.Sequential(
             nn.Conv3d(
                 channels,
                 16,
-                kernel_size=4,
-                stride=4,
+                kernel_size=cnn_initial_stride,
+                stride=cnn_initial_stride,
             ),
             nn.GroupNorm(4, 16),
             nn.ELU(),
@@ -614,6 +617,7 @@ class ActorCriticMultimodal(nn.Module):
                         voxel_cfg.get("feedforward_dim", 128)
                     ),
                     embedding_normalization=embedding_normalization,
+                    cnn_initial_stride=voxel_cfg.get("cnn_initial_stride", 4),
                 )
             elif encoder_type == "local_voxel":
                 self.branch_encoders[branch_name] = LocalVoxelObservationEncoder(

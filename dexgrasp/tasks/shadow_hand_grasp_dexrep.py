@@ -773,9 +773,6 @@ class ShadowHandGraspDexRep(BaseTask):
             voxel_height = (
                 self.voxel_upper[2] - self.voxel_lower[2]
             ) / self.voxel_grid_size[2]
-            voxel_lower_edges = self.voxel_lower[2] + torch.arange(
-                self.voxel_grid_size[2], device=self.device
-            ) * voxel_height
             reward_lower_z = (
                 self.table_top_z + self.touch_minimum_height_above_table
             )
@@ -783,10 +780,13 @@ class ShadowHandGraspDexRep(BaseTask):
                 self.table_top_z
                 + self.voxel_exploration_max_height_above_table
             )
-            eligible_z = (
-                (voxel_lower_edges >= reward_lower_z)
-                & (voxel_lower_edges + voxel_height <= reward_upper_z)
-            )
+            exploration_layers = touch_reward_cfg.get("voxel_exploration_height_layers")
+            if exploration_layers is not None:
+                if type(exploration_layers) is not int or not 1 <= exploration_layers <= self.voxel_grid_size[2]:
+                    raise ValueError("Voxel exploration height layers must fit the grid")
+                reward_upper_z = self.voxel_lower[2] + exploration_layers * voxel_height
+            if reward_upper_z <= reward_lower_z:
+                raise ValueError("Voxel exploration height range is empty")
             position_cfg = self.cfg["env"].get("objectPositionRandomization", {})
             position_ranges = to_torch(
                 [position_cfg.get("xRange", [-0.15, 0.15]),
@@ -797,23 +797,12 @@ class ShadowHandGraspDexRep(BaseTask):
                 position_ranges.zero_()
             search_lower = self.object_init_state[0, :2] + position_ranges[:, 0]
             search_upper = self.object_init_state[0, :2] + position_ranges[:, 1]
-            eligible_xy = []
-            for axis in range(2):
-                cell_size = (
-                    self.voxel_upper[axis] - self.voxel_lower[axis]
-                ) / self.voxel_grid_size[axis]
-                cell_lower = self.voxel_lower[axis] + torch.arange(
-                    self.voxel_grid_size[axis], device=self.device
-                ) * cell_size
-                eligible_xy.append(
-                    (cell_lower >= search_lower[axis])
-                    & (cell_lower + cell_size <= search_upper[axis])
-                )
-            self.voxel_exploration_mask = (
-                eligible_xy[0][:, None, None]
-                & eligible_xy[1][None, :, None]
-                & eligible_z[None, None, :]
-            ).reshape(1, -1)
+            self.voxel_exploration_lower = self.voxel_lower.clone()
+            self.voxel_exploration_upper = self.voxel_upper.clone()
+            self.voxel_exploration_lower[:2] = search_lower
+            self.voxel_exploration_upper[:2] = search_upper
+            self.voxel_exploration_lower[2] = max(self.voxel_lower[2], reward_lower_z)
+            self.voxel_exploration_upper[2] = min(self.voxel_upper[2], reward_upper_z)
             self.voxel_recency_decay = float(
                 voxel_cfg.get("recency_decay", 0.98)
             )
@@ -2234,6 +2223,16 @@ class ShadowHandGraspDexRep(BaseTask):
             touch_sensor_positions,
             object_touch,
         )
+        step_exploration = torch.zeros_like(step_free)
+        eligible_positions = (
+            (touch_sensor_positions >= self.voxel_exploration_lower)
+            & (touch_sensor_positions < self.voxel_exploration_upper)
+        ).all(dim=-1)
+        self.mark_voxel_evidence(
+            step_exploration,
+            touch_sensor_positions,
+            eligible_positions & ~object_touch,
+        )
 
         occupancy_map = self.voxel_map[:, 0].reshape(
             self.num_envs, num_voxels
@@ -2266,13 +2265,12 @@ class ShadowHandGraspDexRep(BaseTask):
             >= self.tactile_position_minimum_quality
         )
         newly_explored_free = torch.logical_and(
-            current_free,
+            current_free & (step_exploration > 0),
             occupancy_map < -0.5,
         )
         newly_explored_free.logical_and_(
             torch.logical_not(self.episode_had_valid_estimate).unsqueeze(1)
         )
-        newly_explored_free.logical_and_(self.voxel_exploration_mask)
         new_voxel_count = newly_explored_free.sum(dim=1).float()
         self.voxel_exploration_reward.copy_(
             self.voxel_exploration_reward_scale

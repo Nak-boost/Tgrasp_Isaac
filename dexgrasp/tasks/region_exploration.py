@@ -9,8 +9,8 @@ class RegionExplorationReward:
         search_lower, search_upper, reference_height, height_layers=3,
         coverage_threshold=0.7, scale=1.0,
     ):
-        if height_layers not in (2, 3) or height_layers > grid_size[2]:
-            raise ValueError("Region exploration requires two or three height layers")
+        if height_layers not in (1, 2, 3) or height_layers > grid_size[2]:
+            raise ValueError("Region exploration requires one, two or three height layers")
         if not math.isfinite(scale) or scale < 0:
             raise ValueError("Region exploration scale must be finite and non-negative")
         if not math.isfinite(coverage_threshold) or not 0 < coverage_threshold <= 1:
