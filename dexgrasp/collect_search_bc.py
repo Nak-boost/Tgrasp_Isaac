@@ -18,7 +18,18 @@ def collection_arguments():
     parser.add_argument("--bc_finger_noise", type=float, default=0.025)
     parser.add_argument("--bc_with_objects", action="store_true")
     parser.add_argument("--bc_checkpoint", default="")
+    parser.add_argument("--bc_base_only", action="store_true")
+    parser.add_argument("--bc_action_noise", type=float, default=0.0)
+    parser.add_argument("--bc_expert_blend", type=float, default=0.0)
+    parser.add_argument("--bc_center_base_angles", action="store_true")
+    parser.add_argument("--bc_noise_hold_steps", type=int, default=1)
     parsed, remaining = parser.parse_known_args()
+    if not 0 <= parsed.bc_action_noise <= 1:
+        parser.error("--bc_action_noise must be between zero and one")
+    if parsed.bc_noise_hold_steps < 1:
+        parser.error("--bc_noise_hold_steps must be positive")
+    if not 0 <= parsed.bc_expert_blend <= 1 or (parsed.bc_expert_blend and not parsed.bc_checkpoint):
+        parser.error("--bc_expert_blend requires a checkpoint and a value between zero and one")
     sys.argv = [sys.argv[0]] + remaining
     return parsed
 
@@ -64,8 +75,12 @@ def save_plot(output, traces, bounds, table_height):
 
 
 def main():
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cuda.matmul.allow_tf32 = False
     args = get_args()
     cfg, cfg_train, _ = load_cfg(args)
+    if OPTIONS.bc_center_base_angles:
+        cfg["env"]["tactile"]["center_base_euler"] = True
     if cfg["env"]["tactile"]["experiment"] != "E3":
         raise ValueError("Search demonstrations currently require E3")
     if cfg["env"].get("useRelativeControl", False):
@@ -87,6 +102,7 @@ def main():
     controller = BasePathController(task, OPTIONS.bc_kp, OPTIONS.bc_kd, OPTIONS.bc_drag)
     palm_index = task.hand_body_idx_dict["palm"]
     initial_state = task.rigid_body_states[:, palm_index].clone()
+    initial_sensors = task.touch_sensor_pos.clone()
     orientation = initial_state[:, 3:7].clone()
     lower = task.shadow_hand_dof_lower_limits[task.actuated_dof_indices]
     upper = task.shadow_hand_dof_upper_limits[task.actuated_dof_indices]
@@ -94,10 +110,11 @@ def main():
     finger_positions += OPTIONS.bc_finger_noise * (2 * torch.rand_like(finger_positions) - 1)
     finger_positions = torch.max(torch.min(finger_positions, upper), lower)
     finger_actions = 2 * (finger_positions - lower) / (upper - lower) - 1
-    records = {name: [] for name in ("observations", "actions", "base_state", "target_position", "sensor_positions", "bc_mask", "next_contact", "tracking_error", "orientation_error", "region_coverage")}
+    records = {name: [] for name in ("observations", "actions", "expert_actions", "base_state", "target_position", "sensor_positions", "bc_mask", "next_contact", "tracking_error", "orientation_error", "region_coverage", "object_state", "body_contact_forces", "sensor_normal_force", "sensor_filtered_force", "phase")}
     contact_seen = task.binary_touch.any(dim=-1)
     policy = None
     hidden = None
+    action_noise = torch.zeros(task.num_envs, 6, device=device)
     if OPTIONS.bc_checkpoint:
         from algorithms.rl.ppo1.multimodal_policy import ActorCriticMultimodal
         policy = ActorCriticMultimodal(env.observation_space.shape, env.action_space.shape, cfg_train["learn"]["init_noise_std"], cfg_train["policy"], cfg_train["encoder"], cfg["env"]).to(device)
@@ -105,15 +122,27 @@ def main():
         policy.eval()
         hidden = policy.initial_recurrent_state(task.num_envs, device)
 
-    def advance(target, velocity):
-        nonlocal observations, hidden, contact_seen
+    def advance(target, velocity, phase):
+        nonlocal observations, hidden, contact_seen, action_noise
         actions = controller.actions(target, velocity, orientation, finger_actions)
+        expert_actions = actions.clone()
+        records["expert_actions"].append(actions.detach().cpu().numpy().copy())
         if policy is not None:
             with torch.no_grad():
                 prediction = policy.act_inference(observations, hidden)
                 if policy.is_recurrent:
                     prediction, hidden = prediction
-                actions[:, :6] = prediction[:, :6].clamp(-1, 1)
+                if OPTIONS.bc_base_only:
+                    actions[:, :6] = prediction[:, :6].clamp(-1, 1)
+                else:
+                    actions = prediction.clamp(-1, 1)
+                actions[:, :6] = (1 - OPTIONS.bc_expert_blend) * actions[:, :6] + OPTIONS.bc_expert_blend * expert_actions[:, :6]
+        if OPTIONS.bc_action_noise:
+            actions = actions.clone()
+            if len(records["actions"]) % OPTIONS.bc_noise_hold_steps == 0:
+                action_noise = OPTIONS.bc_action_noise * torch.randn_like(actions[:, :6])
+            actions[:, :6] = (actions[:, :6] + action_noise).clamp(-1, 1)
+        records["phase"].append(phase.cpu().numpy().copy())
         records["observations"].append(observations.detach().cpu().to(torch.float16).numpy().copy())
         records["actions"].append(actions.detach().cpu().numpy().copy())
         records["base_state"].append(task.rigid_body_states[:, palm_index].cpu().numpy().copy())
@@ -121,6 +150,12 @@ def main():
         records["sensor_positions"].append(task.touch_sensor_pos.cpu().numpy().copy())
         records["bc_mask"].append((~contact_seen).cpu().numpy())
         observations, _, done, _ = env.step(actions)
+        records["object_state"].append(task.root_state_tensor[task.object_indices].cpu().numpy().copy())
+        records["body_contact_forces"].append(task.net_contact_force_tensor.cpu().numpy().copy())
+        sensor_force = task.net_contact_force_tensor[:, task.touch_sensor_handles]
+        normal_force = (sensor_force * task.touch_sensor_world_inward_normals).sum(dim=-1)
+        records["sensor_normal_force"].append(normal_force.cpu().numpy().copy())
+        records["sensor_filtered_force"].append(task.touch_force.cpu().numpy().copy())
         contact = task.binary_touch.any(dim=-1)
         contact_seen |= contact
         error = (task.rigid_body_states[:, palm_index, :3] - target).norm(dim=-1)
@@ -135,9 +170,12 @@ def main():
         return error, coverage
 
     for _ in range(60):
-        advance(initial_state[:, :3], torch.zeros_like(initial_state[:, :3]))
+        advance(initial_state[:, :3], torch.zeros_like(initial_state[:, :3]), torch.zeros(task.num_envs, device=device, dtype=torch.long))
     palm_state = task.rigid_body_states[:, palm_index].clone()
     sensor_positions = task.touch_sensor_pos.clone()
+    if policy is not None:
+        palm_state = initial_state
+        sensor_positions = initial_sensors
     print("Initial palm:", palm_state[0].tolist(), flush=True)
     print("Settled sensors:", sensor_positions[0].tolist(), flush=True)
     print("Finger DOFs:", task.shadow_hand_dof_pos[0].tolist(), flush=True)
@@ -145,22 +183,24 @@ def main():
     randomization = cfg["env"]["objectPositionRandomization"]
     bounds = [*randomization["xRange"], *randomization["yRange"]]
     dt = task.dt * task.control_freq_inv
-    paths, velocities, waypoints = [], [], []
+    paths, velocities, waypoints, phases = [], [], [], []
     for env_index in range(task.num_envs):
         offset = (sensor_positions[env_index].mean(dim=0) - palm_state[env_index, :3]).cpu().numpy()
         points = serpentine_waypoints(palm_state[env_index, :3].cpu().numpy(), offset, bounds, OPTIONS.bc_sensor_height, OPTIONS.bc_lane_spacing)
         speed = OPTIONS.bc_speed * (1 + 0.04 * (env_index / max(task.num_envs - 1, 1) - 0.5))
-        positions, rates = sample_path(points, speed, dt)
+        positions, rates, phase_ids = sample_path(points, speed, dt, return_phases=True)
         paths.append(torch.as_tensor(positions, device=device))
         velocities.append(torch.as_tensor(rates, device=device))
         waypoints.append(points.tolist())
+        phases.append(torch.as_tensor(phase_ids, device=device))
     required_steps = max(len(path) for path in paths)
     steps = min(OPTIONS.bc_steps, required_steps) if OPTIONS.bc_steps else required_steps
     task.max_episode_length = max(task.max_episode_length, steps + 70)
     for step in range(steps):
         target = torch.stack([path[min(step, len(path) - 1)] for path in paths])
         velocity = torch.stack([rates[min(step, len(rates) - 1)] if step < len(rates) else torch.zeros(3, device=device) for rates in velocities])
-        error, coverage = advance(target, velocity)
+        phase = torch.stack([phase_ids[min(step, len(phase_ids) - 1)] for phase_ids in phases])
+        error, coverage = advance(target, velocity, phase)
         if step % 200 == 0:
             print(f"step={step}/{steps} mean_error={error.mean().item():.4f} contact_envs={contact_seen.sum().item()} mean_coverage={coverage.mean().item():.3f}", flush=True)
     arrays = {name: np.stack(values) for name, values in records.items()}
@@ -169,13 +209,26 @@ def main():
     traces, summaries = [], []
     for env_index in range(task.num_envs):
         length = 60 + min(steps, len(paths[env_index]))
+        if policy is not None and not OPTIONS.bc_expert_blend:
+            length = 60 + steps
         trace = {name: values[:length, env_index] for name, values in arrays.items()}
         np.savez_compressed(output / f"trajectory_{env_index:04d}.npz", **trace)
         traces.append(trace)
+        cursor, reached = 0, 0
+        for waypoint in waypoints[env_index]:
+            distances = np.linalg.norm(trace["base_state"][cursor:, :3] - waypoint, axis=1)
+            matches = np.flatnonzero(distances <= 0.03)
+            if not len(matches):
+                break
+            cursor += int(matches[0])
+            reached += 1
         summaries.append({
             "trajectory": env_index, "steps": length,
             "bc_samples": int(trace["bc_mask"].sum()),
             "complete": steps >= len(paths[env_index]),
+            "ordered_waypoints_reached": reached,
+            "waypoint_count": len(waypoints[env_index]),
+            "waypoint_tolerance_m": 0.03,
             "tracking_rmse_m": float(np.sqrt(np.mean(trace["tracking_error"] ** 2))),
             "tracking_p95_m": float(np.percentile(trace["tracking_error"], 95)),
             "orientation_max_deg": float(np.rad2deg(trace["orientation_error"].max())),
@@ -183,7 +236,7 @@ def main():
             "base_saturation_fraction": float((np.abs(trace["actions"][:, :6]) >= 0.999).mean()),
             "final_region_coverage": trace["region_coverage"][-1].tolist(),
         })
-    metadata = {"schema_version": 1, "collection": vars(OPTIONS), "args": vars(args), "env": cfg["env"], "train": cfg_train, "dt": dt, "action_indices": list(range(6)), "waypoints": waypoints, "summaries": summaries}
+    metadata = {"schema_version": 1, "collection": vars(OPTIONS), "args": vars(args), "env": cfg["env"], "train": cfg_train, "dt": dt, "action_indices": list(range(6)), "waypoints": waypoints, "summaries": summaries, "hand_body_names": task.gym.get_actor_rigid_body_names(task.envs[0], task.shadow_hands[0]), "sensor_body_indices": task.touch_sensor_handles.cpu().tolist()}
     with (output / "metadata.json").open("w") as handle:
         json.dump(metadata, handle, indent=2, default=str)
     with (output / "resolved_config.yaml").open("w") as handle:

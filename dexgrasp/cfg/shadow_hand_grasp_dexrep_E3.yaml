@@ -9,7 +9,7 @@ env:
   env_name: "shadow_hand_grasp_dexrep"
   numEnvs: 1024
   envSpacing: 1.5
-  episodeLength: 1600
+  episodeLength: 5000
   ppoRolloutSteps: 32
   enableDebugVis: False
   aggregateMode: 1
@@ -56,7 +56,7 @@ env:
   # The values below describe E1 and preserve prop as the first branch,
   # which is required by PPO1 RolloutStorage.
   obs_dim:
-    prop: 89
+    prop: 95
     current_touch: 14
     relative_object_position: 3
 
@@ -103,6 +103,8 @@ env:
 
   tactile:
     enabled: True
+    include_base_velocity: True
+    center_base_euler: True
 
     # The loaded Shadow Hand has 22 joint DOFs. The policy still has
     # 24 actions: 6 floating-base commands and 18 actuator commands.

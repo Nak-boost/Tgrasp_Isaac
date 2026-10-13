@@ -1,5 +1,7 @@
 # C分支：基座搜索BC
 
+2026-10-12更新：当前本体输入已增加6维基座速度，完整观测为32,880维；欧拉角改为−π～π，手指输出初始化与示范一致。当前候选checkpoint、闭环结果及诊断见 [BC_FOLLOWUP_1012.md](BC_FOLLOWUP_1012.md)。下面的首批数据和3轮结果属于旧89维本体版本，其checkpoint不能直接加载到新版本；中间使用旧欧拉角的95维模型也需配合原配置。
+
 ## 版本与范围
 
 - 项目：`/remote-home/ums_hanminghao/Projects/Tgrasp_C`，分支：`experiment-C`。

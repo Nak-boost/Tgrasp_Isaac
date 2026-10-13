@@ -5,6 +5,7 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
+import math
 import os.path as osp
 from utils.torch_jit_utils import *
 from tasks.hand_base.base_task import BaseTask
@@ -317,6 +318,11 @@ class ShadowHandGraspDexRep(BaseTask):
                 + 3 * self.num_fingertips
                 + self.tactile_action_dim
             )
+            self.include_base_velocity = bool(
+                self.tactile_cfg.get("include_base_velocity", False)
+            )
+            if self.include_base_velocity:
+                self.tactile_prop_dim += 6
             self.history_frame_dim = (
                 4 * self.current_touch_dim
                 + self.tactile_core_dim
@@ -1812,6 +1818,8 @@ class ShadowHandGraspDexRep(BaseTask):
             self.hand_orientations[self.hand_indices, :]
         )
         hand_euler = torch.stack(hand_orientation, dim=-1)
+        if self.tactile_cfg.get("center_base_euler", False):
+            hand_euler = torch.remainder(hand_euler + math.pi, 2 * math.pi) - math.pi
 
         fingertip_positions = self.fingertip_pos
         fingertip_positions_flat = fingertip_positions.reshape(
@@ -1846,6 +1854,12 @@ class ShadowHandGraspDexRep(BaseTask):
             ),
             dim=1,
         )
+
+        if self.include_base_velocity:
+            base_velocity = self.rigid_body_states[
+                :, self.hand_body_idx_dict["palm"], 7:13
+            ]
+            proprioception = torch.cat((proprioception, base_velocity), dim=1)
 
         if proprioception.shape[1] != self.tactile_prop_dim:
             raise RuntimeError(

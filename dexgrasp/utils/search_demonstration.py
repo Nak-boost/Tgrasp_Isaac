@@ -20,11 +20,11 @@ def serpentine_waypoints(start, sensor_offset, bounds, sensor_height, lane_spaci
     return np.asarray(points)
 
 
-def sample_path(waypoints, speed, dt):
+def sample_path(waypoints, speed, dt, return_phases=False):
     if speed <= 0 or dt <= 0:
         raise ValueError("Speed and timestep must be positive")
-    positions, velocities = [], []
-    for start, end in zip(waypoints[:-1], waypoints[1:]):
+    positions, velocities, phases = [], [], []
+    for segment, (start, end) in enumerate(zip(waypoints[:-1], waypoints[1:])):
         displacement = end - start
         duration = max(1.5 * np.linalg.norm(displacement) / speed, 0.3)
         count = max(2, int(math.ceil(duration / dt)))
@@ -34,7 +34,10 @@ def sample_path(waypoints, speed, dt):
         rate = (6 * phase - 6 * phase ** 2) / duration
         positions.extend(start + blend[:, None] * displacement)
         velocities.extend(rate[:, None] * displacement)
-    return np.asarray(positions, dtype=np.float32), np.asarray(velocities, dtype=np.float32)
+        phase_id = 1 if segment == 0 else 2 if segment == 1 else 3 if abs(displacement[1]) > abs(displacement[0]) else 4
+        phases.extend([phase_id] * count)
+    result = (np.asarray(positions, dtype=np.float32), np.asarray(velocities, dtype=np.float32))
+    return (*result, np.asarray(phases, dtype=np.int64)) if return_phases else result
 
 
 def orientation_error(target, current):
