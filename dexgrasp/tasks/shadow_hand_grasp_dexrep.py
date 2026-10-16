@@ -134,17 +134,9 @@ class ShadowHandGraspDexRep(BaseTask):
             "force_mode",
             "normal" if touch_layout == "pad14" else "norm",
         )
-        self.touch_minimum_height_above_table = float(
-            touch_cfg.get("minimum_height_above_table", 0.005)
-        )
         if self.touch_force_mode not in {"normal", "norm"}:
             raise ValueError(
                 "tactile.touch.force_mode must be normal or norm"
-            )
-        if self.touch_minimum_height_above_table < 0.0:
-            raise ValueError(
-                "tactile.touch.minimum_height_above_table must be "
-                "non-negative"
             )
         self.num_fingertips = len(self.fingertips)
         self.num_touch_sensors = len(self.touch_sensor_bodies)
@@ -395,9 +387,14 @@ class ShadowHandGraspDexRep(BaseTask):
         self.use_vel_obs = False
         self.fingertip_obs = True
         self.asymmetric_obs = self.cfg["env"]["asymmetric_observations"]
+        self.privileged_obs_dim = (
+            30 if self.asymmetric_obs and self.tactile_enabled
+            and self.tactile_experiment in {"E2", "E3"} else 0
+        )
+        self.cfg["env"]["privileged_obs_dim"] = self.privileged_obs_dim
         num_states = 0
         if self.asymmetric_obs:
-            num_states = 211
+            num_states = self.privileged_obs_dim or 211
         if not self.tactile_enabled:
             self.cfg["env"]["numObservations"] = self.num_obs_dict[
                 self.obs_type
@@ -629,6 +626,11 @@ class ShadowHandGraspDexRep(BaseTask):
                     "voxel_exploration_new_voxel_cap", 4
                 )
             )
+            self.voxel_exploration_min_height_above_table = float(
+                touch_reward_cfg.get(
+                    "voxel_exploration_min_height_above_table", 0.005
+                )
+            )
             self.voxel_exploration_max_height_above_table = float(
                 touch_reward_cfg.get(
                     "voxel_exploration_max_height_above_table", 0.20
@@ -656,12 +658,19 @@ class ShadowHandGraspDexRep(BaseTask):
                     "must be positive"
                 )
             if (
+                self.voxel_exploration_min_height_above_table < 0.0
+            ):
+                raise ValueError(
+                    "tactile.reward.voxel_exploration_min_height_above_table "
+                    "must be non-negative"
+                )
+            if (
                 self.voxel_exploration_max_height_above_table
-                <= self.touch_minimum_height_above_table
+                <= self.voxel_exploration_min_height_above_table
             ):
                 raise ValueError(
                     "tactile.reward.voxel_exploration_max_height_above_table "
-                    "must exceed tactile.touch.minimum_height_above_table"
+                    "must exceed tactile.reward.voxel_exploration_min_height_above_table"
                 )
             if (
                 self.touch_contact_per_finger_reward_scale < 0.0
@@ -680,6 +689,14 @@ class ShadowHandGraspDexRep(BaseTask):
                 self.num_envs,
                 device=self.device,
                 dtype=torch.bool,
+            )
+            self.contact_loss_reset_steps = int(
+                self.tactile_cfg.get("contact_loss_reset_steps", 0)
+            )
+            if self.contact_loss_reset_steps < 0:
+                raise ValueError("tactile.contact_loss_reset_steps must be non-negative")
+            self.consecutive_no_contact_steps = torch.zeros_like(
+                self.episode_had_contact, dtype=torch.long
             )
             self.episode_had_valid_estimate = torch.zeros_like(
                 self.episode_had_contact
@@ -774,7 +791,7 @@ class ShadowHandGraspDexRep(BaseTask):
                 self.voxel_upper[2] - self.voxel_lower[2]
             ) / self.voxel_grid_size[2]
             reward_lower_z = (
-                self.table_top_z + self.touch_minimum_height_above_table
+                self.table_top_z + self.voxel_exploration_min_height_above_table
             )
             reward_upper_z = (
                 self.table_top_z
@@ -818,7 +835,10 @@ class ShadowHandGraspDexRep(BaseTask):
                     "tactile.voxel.expiration_threshold must be in [0, 1]"
                 )
             region_cfg = touch_reward_cfg.get("region_exploration", {})
-            if self.tactile_experiment == "E3" and region_cfg.get("scale", 0.0) != 0:
+            if self.tactile_experiment == "E3" and (
+                region_cfg.get("scale", 0.0) != 0
+                or region_cfg.get("visit_bonus", 0.0) != 0
+            ):
                 if not position_cfg.get("enabled", False):
                     raise ValueError(
                         "Region exploration requires object position randomization"
@@ -834,8 +854,9 @@ class ShadowHandGraspDexRep(BaseTask):
                         self.table_top_z + region_cfg.get("height_above_table", 0.05)
                     ),
                     height_layers=region_cfg.get("height_layers", 3),
-                    coverage_threshold=region_cfg.get("coverage_threshold", 0.7),
-                    scale=region_cfg["scale"],
+                    visit_radius=region_cfg.get("visit_radius", 0.03),
+                    scale=region_cfg.get("scale", 0.0),
+                    visit_bonus=region_cfg.get("visit_bonus", 0.0),
                 )
             if self.tactile_experiment == "E3" and self.local_voxel_enabled:
                 local_cfg = self.tactile_cfg["local_voxel"]
@@ -1083,7 +1104,7 @@ class ShadowHandGraspDexRep(BaseTask):
             table_shape_props[0].friction = 1
             object_shape_props[0].friction = 1
             if self.tactile_enabled:
-                self._disable_palm_table_collision(
+                self._disable_sensor_table_collision(
                     env_ptr, shadow_hand_actor, table_shape_props, object_shape_props
                 )
             self.gym.set_actor_rigid_shape_properties(env_ptr, table_handle, table_shape_props)
@@ -1205,32 +1226,37 @@ class ShadowHandGraspDexRep(BaseTask):
             goal_asset_dict[object_id] = goal_asset
         return goal_asset_dict, object_asset_dict
 
-    def _disable_palm_table_collision(
+    def _disable_sensor_table_collision(
         self, env_ptr, hand_actor, table_shape_props, object_shape_props
     ):
-        palm_body = self.gym.find_actor_rigid_body_index(
-            env_ptr, hand_actor, "robot0:palm_sensor", gymapi.DOMAIN_ACTOR
-        )
-        if palm_body < 0:
-            raise ValueError("Tactile hand requires robot0:palm_sensor")
-        palm_shapes = self.gym.get_actor_rigid_body_shape_indices(
+        body_names = self.gym.get_actor_rigid_body_names(env_ptr, hand_actor)
+        sensor_body_indices = [
+            body_index for body_index, body_name in enumerate(body_names)
+            if body_name.endswith("_sensor")
+        ]
+        if not sensor_body_indices:
+            raise ValueError("Tactile hand requires sensor collision bodies")
+        body_shape_indices = self.gym.get_actor_rigid_body_shape_indices(
             env_ptr, hand_actor
-        )[palm_body]
-        if palm_shapes.count == 0:
-            raise ValueError("Palm sensor has no collision shapes")
+        )
         hand_shape_props = self.gym.get_actor_rigid_shape_properties(
             env_ptr, hand_actor
         )
         used_filters = 0
         for shape in hand_shape_props + table_shape_props + object_shape_props:
             used_filters |= shape.filter
-        exclusion_bit = 1 << used_filters.bit_length()
-        if exclusion_bit >= (1 << 31):
-            raise ValueError("No unused collision filter bit for palm/table exclusion")
-        for shape_index in range(palm_shapes.start, palm_shapes.start + palm_shapes.count):
-            hand_shape_props[shape_index].filter |= exclusion_bit
-        for shape in table_shape_props:
-            shape.filter |= exclusion_bit
+        first_free_bit = used_filters.bit_length()
+        if first_free_bit + len(sensor_body_indices) > 31:
+            raise ValueError("Not enough collision filter bits for sensor/table exclusion")
+        for sensor_index, body_index in enumerate(sensor_body_indices):
+            sensor_shapes = body_shape_indices[body_index]
+            if sensor_shapes.count == 0:
+                raise ValueError(f"Sensor {body_names[body_index]} has no collision shapes")
+            exclusion_bit = 1 << (first_free_bit + sensor_index)
+            for shape_index in range(sensor_shapes.start, sensor_shapes.start + sensor_shapes.count):
+                hand_shape_props[shape_index].filter |= exclusion_bit
+            for shape in table_shape_props:
+                shape.filter |= exclusion_bit
         self.gym.set_actor_rigid_shape_properties(env_ptr, hand_actor, hand_shape_props)
 
     def _load_shadow_hand_asset(self):
@@ -1306,10 +1332,25 @@ class ShadowHandGraspDexRep(BaseTask):
         self.shadow_hand_dof_default_vel = to_torch(self.shadow_hand_dof_default_vel, device=self.device)
         return shadow_hand_asset, shadow_hand_dof_props, table_texture_handle
 
+    def update_contact_loss_termination(self):
+        has_contact = (self.binary_touch > 0.5).any(dim=1)
+        self.consecutive_no_contact_steps.copy_(torch.where(
+            self.episode_had_contact & ~has_contact,
+            self.consecutive_no_contact_steps + 1,
+            torch.zeros_like(self.consecutive_no_contact_steps),
+        ))
+        contact_lost = (
+            (self.contact_loss_reset_steps > 0)
+            & (self.consecutive_no_contact_steps >= self.contact_loss_reset_steps)
+        )
+        self.reset_buf.masked_fill_(contact_lost, 1)
+        self.extras["contact_loss_timeout"] = contact_lost.float()
+
     def compute_reward(self, actions, id=-1):
         self.dof_pos = self.shadow_hand_dof_pos
 
         if self.tactile_enabled:
+            self.update_contact_loss_termination()
             valid_grasp = self.update_valid_grasp()
             touch_count = valid_grasp.float() * 2.0
             object_start_height = self.episode_object_start_height
@@ -1750,16 +1791,6 @@ class ShadowHandGraspDexRep(BaseTask):
             touch_force = torch.norm(
                 force_vectors, p=2, dim=-1
             )
-        valid_touch_height = (
-            self.touch_sensor_pos[:, :, 2]
-            >= self.table_top_z
-            + self.touch_minimum_height_above_table
-        )
-        touch_force = torch.where(
-            valid_touch_height,
-            touch_force,
-            torch.zeros_like(touch_force),
-        )
         self.touch_force = touch_force
 
         touch_on_threshold = self.tactile_cfg["touch"].get(
@@ -2291,7 +2322,7 @@ class ShadowHandGraspDexRep(BaseTask):
             self.region_exploration_reward.copy_(
                 self.region_exploration.update(
                     self.voxel_map[:, 0],
-                    self.rigid_body_states[:, self.hand_body_idx_dict["palm"], :2],
+                    self.rigid_body_states[:, self.hand_body_idx_dict["palm"], :3],
                     ~self.episode_had_valid_estimate,
                 )
             )
@@ -2674,6 +2705,7 @@ class ShadowHandGraspDexRep(BaseTask):
             self.consecutive_valid_grasp_steps[env_ids] = 0
             self.valid_grasp_mask[env_ids] = False
             self.episode_had_contact[env_ids] = False
+            self.consecutive_no_contact_steps[env_ids] = 0
             self.episode_had_valid_estimate[env_ids] = False
             self.episode_had_multi_contact[env_ids] = False
             self.episode_had_lift[env_ids] = False
@@ -2736,12 +2768,41 @@ class ShadowHandGraspDexRep(BaseTask):
                                                         gymtorch.unwrap_tensor(self.prev_targets),
                                                         gymtorch.unwrap_tensor(all_hand_indices), len(all_hand_indices))
 
+    def compute_privileged_observations(self):
+        palm_position = self.rigid_body_states[:, self.hand_body_idx_dict["palm"], :3]
+        stage = torch.stack((
+            (self.episode_object_start_height - self.table_top_z)
+            / self.touch_lift_target_height,
+            (self.object_pos[:, 2] - self.episode_object_start_height)
+            / self.touch_lift_target_height,
+            (1.0 - self.progress_buf.float() / self.max_episode_length).clamp(0, 1),
+            (self.consecutive_valid_grasp_steps.float() / self.valid_grasp_required_steps).clamp(0, 1),
+            (self.consecutive_lift_hold_steps / self.touch_lift_hold_steps).clamp(0, 1),
+            (self.consecutive_no_contact_steps.float() / max(self.contact_loss_reset_steps, 1)).clamp(0, 1),
+            self.episode_had_contact.float(),
+            self.episode_had_valid_estimate.float(),
+        ), dim=-1)
+        regions = (
+            self.region_exploration.explored_regions.float()
+            if self.region_exploration is not None else self.states_buf.new_zeros(self.num_envs, 9)
+        )
+        self.states_buf.copy_(torch.cat((
+            (self.object_pos - palm_position) / self.relative_object_position_scale,
+            self.object_rot,
+            self.object_linvel,
+            self.vel_obs_scale * self.object_angvel,
+            stage,
+            regions,
+        ), dim=-1))
+
     def post_physics_step(self):
         self.progress_buf += 1
         self.randomize_buf += 1
 
         self.compute_observations()
         self.compute_reward(self.actions, self.id)
+        if self.privileged_obs_dim:
+            self.compute_privileged_observations()
 
         if self.viewer and self.debug_viz:
             # draw axes on target object

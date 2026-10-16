@@ -9,7 +9,7 @@ env:
   env_name: "shadow_hand_grasp_dexrep"
   numEnvs: 1024
   envSpacing: 1.5
-  episodeLength: 3200
+  episodeLength: 1600
   ppoRolloutSteps: 32
   enableDebugVis: False
   aggregateMode: 1
@@ -45,7 +45,7 @@ env:
   rotRewardScale: 1.0
   rotEps: 0.1
   actionPenaltyScale: -0.0002
-  reachGoalBonus: 40
+  reachGoalBonus: 160
   fallDistance: 0.4
   fallPenalty: 0.0
 
@@ -113,6 +113,7 @@ env:
     # E3 adds voxel map; E4 adds touch history.
     # E5 adds oracle state, frozen PointNet and DexRep interaction.
     experiment: "E3"
+    contact_loss_reset_steps: 100
 
     relative_object_position:
       # Estimate object position from current and previous tactile contacts.
@@ -145,8 +146,6 @@ env:
       # Hysteresis avoids rapid binary-touch switching near threshold.
       on_threshold: 1.0
       off_threshold: 0.5
-      # Ignore contacts whose sensor centre is within 15 mm of the table.
-      minimum_height_above_table: 0.015
 
     reward:
       # One finger: 0.01; two or more: 0.02; valid grasp adds 0.02.
@@ -160,8 +159,8 @@ env:
       upward_action: 0.075
       upward_action_saturation: 0.3
       # Per-step dense height reward, paid after a valid grasp.
-      # At the 12 cm target this term is 0.25.
-      lift_height: 0.25
+      # At the 12 cm target this term is 0.5.
+      lift_height: 0.5
       # Required object height increase relative to reset height.
       lift_target_height: 0.12
       # Additional per-step reward while the object remains above target.
@@ -181,10 +180,12 @@ env:
       # Duplicate sensor observations in one step count as one voxel.
       voxel_exploration: 0.01
       voxel_exploration_new_voxel_cap: 4
+      voxel_exploration_min_height_above_table: 0.015
       voxel_exploration_height_layers: 3
       region_exploration:
         scale: 1.0
-        coverage_threshold: 0.70
+        visit_radius: 0.03
+        visit_bonus: 0.1
         height_above_table: 0.05
         height_layers: 1
 
@@ -226,7 +227,7 @@ env:
     yRange: [-0.25, 0.25]
 
   handAgentIndex: "[[0, 1, 2, 3, 4, 5]]"
-  asymmetric_observations: False
+  asymmetric_observations: True
   successTolerance: 0.1
   printNumSuccesses: False
   maxConsecutiveSuccesses: 0

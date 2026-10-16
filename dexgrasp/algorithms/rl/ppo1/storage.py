@@ -21,6 +21,7 @@ class RolloutStorage:
         device="cpu",
         sampler="sequential",
         recurrent_hidden_state_size=0,
+        privileged_obs_dim=0,
     ):
 
         self.device = device
@@ -29,6 +30,10 @@ class RolloutStorage:
         # Core
         self.observations = None
         self.states = torch.zeros(num_transitions_per_env, num_envs, states_shape, device=self.device)
+        self.privileged_observations = (
+            torch.zeros(num_transitions_per_env, num_envs, privileged_obs_dim, device=self.device)
+            if privileged_obs_dim else None
+        )
         self.rewards = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
         self.actions = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
         self.dones = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device).byte()
@@ -62,6 +67,7 @@ class RolloutStorage:
         actions_log_prob, mu, sigma, obs_device,
         upward_action_supervision_mask=None,
         recurrent_hidden_states=None,
+        privileged_observations=None,
     ):
         if self.step >= self.num_transitions_per_env:
             raise AssertionError("Rollout buffer overflow")
@@ -72,6 +78,10 @@ class RolloutStorage:
                 )
             self.observations[self.step].copy_(observations.to(obs_device))
         self.states[self.step].copy_(states)
+        if self.privileged_observations is not None:
+            if privileged_observations is None or privileged_observations.shape != self.privileged_observations[self.step].shape:
+                raise ValueError("Privileged rollout observations have an incorrect shape")
+            self.privileged_observations[self.step].copy_(privileged_observations.detach())
         self.actions[self.step].copy_(actions)
         self.rewards[self.step].copy_(rewards.view(-1, 1))
         self.dones[self.step].copy_(dones.view(-1, 1))

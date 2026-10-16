@@ -131,6 +131,9 @@ class PPO:
             self.cfg_env,
         )
         self.actor_critic.to(self.device)
+        self.privileged_obs_dim = getattr(self.actor_critic, "privileged_obs_dim", 0)
+        if self.privileged_obs_dim and self.privileged_obs_dim != self.vec_env.num_states:
+            raise ValueError("Critic privileged input does not match environment state size")
         self.is_recurrent = bool(
             getattr(self.actor_critic, "is_recurrent", False)
         )
@@ -139,6 +142,8 @@ class PPO:
             if self.is_recurrent else 0
         )
         print(f"Encoder Name: {actor_critic_name}")
+        if self.privileged_obs_dim:
+            print(f"Asymmetric critic: {self.privileged_obs_dim} privileged inputs; actor observations unchanged")
         if hasattr(self.actor_critic, "initial_action_std"):
             print(
                 "Action noise std: "
@@ -157,6 +162,7 @@ class PPO:
             self.device,
             sampler,
             recurrent_hidden_state_size=self.recurrent_hidden_size,
+            privileged_obs_dim=self.privileged_obs_dim,
         )
         self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=self.learning_rate)
 
@@ -297,13 +303,19 @@ class PPO:
             self.device,
         )
 
-    def act(self, observations, recurrent_hidden_states):
+    def privileged_arguments(self):
+        if not self.privileged_obs_dim:
+            return {}
+        return {"privileged_observations": self.vec_env.get_state().to(self.device).detach().clone()}
+
+    def act(self, observations, recurrent_hidden_states, **critic_arguments):
         if self.is_recurrent:
             return self.actor_critic.act(
                 observations,
                 recurrent_hidden_states,
+                **critic_arguments,
             )
-        return self.actor_critic.act(observations) + (None,)
+        return self.actor_critic.act(observations, **critic_arguments) + (None,)
 
     def act_inference(self, observations, recurrent_hidden_states):
         if self.is_recurrent:
@@ -321,11 +333,15 @@ class PPO:
         ).to(recurrent_hidden_states.dtype)
 
     def get_last_values(self, observations, recurrent_hidden_states):
+        critic_arguments = self.privileged_arguments()
         if self.is_recurrent:
             return self.actor_critic.get_value(
                 observations,
                 recurrent_hidden_states,
+                **critic_arguments,
             )
+        if self.privileged_obs_dim:
+            return self.actor_critic.get_value(observations, **critic_arguments)
         return self.actor_critic.act(observations)[2]
 
     @staticmethod
@@ -518,6 +534,7 @@ class PPO:
                         supervision_mask.zero_()
                         current_contact_mask.zero_()
                         valid_grasp_mask.zero_()
+                    critic_arguments = self.privileged_arguments()
                     # Compute the action
                     (
                         actions,
@@ -531,6 +548,7 @@ class PPO:
                     ) = self.act(
                         current_obs_state,
                         recurrent_hidden_states,
+                        **critic_arguments,
                     )
                     action_std = sigma.exp()
                     phase_masks = {
@@ -571,6 +589,7 @@ class PPO:
                         values, actions_log_prob, mu, sigma, self.obs_device,
                         supervision_mask,
                         recurrent_hidden_states,
+                        **critic_arguments,
                     )
                     if self.upward_supervision_enabled:
                         if _UPWARD_SUPERVISION_MASK not in infos or "lifted" not in infos:
@@ -923,6 +942,10 @@ class PPO:
                         actions_sequence,
                         initial_hidden_states,
                         dones_sequence,
+                        **(
+                            {"privileged_observations": self.storage.privileged_observations[:, indices]}
+                            if self.privileged_obs_dim else {}
+                        ),
                     )
                     actions_batch = actions_sequence.reshape(
                         -1, self.storage.actions.size(-1)
@@ -997,6 +1020,10 @@ class PPO:
                         obs_batch,
                         states_batch,
                         actions_batch,
+                        **(
+                            {"privileged_observations": self.storage.privileged_observations.flatten(0, 1)[indices]}
+                            if self.privileged_obs_dim else {}
+                        ),
                     )
 
                 # KL

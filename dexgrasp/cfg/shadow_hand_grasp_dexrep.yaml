@@ -195,8 +195,6 @@ env:
       # Hysteresis avoids rapid binary-touch switching near threshold.
       on_threshold: 1.0
       off_threshold: 0.5
-      # Ignore contacts whose sensor centre is within 5 mm of the table.
-      minimum_height_above_table: 0.005
 
     reward:
       # Shared by E1-E5. All terms are dense and use five-finger
