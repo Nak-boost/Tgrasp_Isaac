@@ -7,14 +7,16 @@ class RegionExplorationReward:
     def __init__(
         self, num_envs, grid_size, voxel_lower, voxel_upper,
         search_lower, search_upper, reference_height, height_layers=3,
-        coverage_threshold=0.7, scale=1.0,
+        visit_radius=0.03, scale=1.0, visit_bonus=0.0,
     ):
         if height_layers not in (2, 3) or height_layers > grid_size[2]:
             raise ValueError("Region exploration requires two or three height layers")
         if not math.isfinite(scale) or scale < 0:
             raise ValueError("Region exploration scale must be finite and non-negative")
-        if not math.isfinite(coverage_threshold) or not 0 < coverage_threshold <= 1:
-            raise ValueError("Region exploration coverage_threshold must be in (0, 1]")
+        if not math.isfinite(visit_bonus) or visit_bonus < 0:
+            raise ValueError("Region exploration visit_bonus must be finite and non-negative")
+        if not math.isfinite(visit_radius) or visit_radius <= 0:
+            raise ValueError("Region exploration visit_radius must be finite and positive")
         if not torch.isfinite(search_lower).all() or not torch.isfinite(search_upper).all():
             raise ValueError("Region exploration search bounds must be finite")
         if not (search_upper > search_lower).all():
@@ -28,7 +30,9 @@ class RegionExplorationReward:
             raise ValueError("Region exploration reference height must lie inside the voxel map")
 
         self.scale = scale
-        self.coverage_threshold = coverage_threshold
+        self.visit_bonus = visit_bonus
+        self.visit_radius = visit_radius
+        self.center_height = reference_height
         device = voxel_lower.device
         cell_size = (voxel_upper - voxel_lower) / voxel_lower.new_tensor(grid_size)
         layer_start = round(
@@ -75,7 +79,13 @@ class RegionExplorationReward:
         return torch.norm(offsets, dim=-1)
 
     @torch.no_grad()
-    def update(self, occupancy, palm_xy, search_active):
+    def update(self, occupancy, palm_position, search_active):
+        palm_xy = palm_position[:, :2]
+        center_distances = torch.sqrt(
+            (palm_xy.unsqueeze(1) - self.centers.unsqueeze(0)).square().sum(dim=-1)
+            + (palm_position[:, 2:3] - self.center_height).square()
+        )
+        reached_centers = center_distances <= self.visit_radius
         current_distance = self.distance_to_region(palm_xy, self.target)
         reward = torch.where(
             self.target_valid & search_active,
@@ -87,9 +97,11 @@ class RegionExplorationReward:
         self.coverage.copy_(
             (observed_xy.flatten(1).float() @ self.region_weights).clamp(0, 1)
         )
-        self.explored_regions.logical_or_(
-            self.coverage >= self.coverage_threshold - 1.0e-6
+        newly_visited = (
+            reached_centers & ~self.explored_regions & search_active.unsqueeze(1)
         )
+        reward.add_(self.visit_bonus * newly_visited.sum(dim=1))
+        self.explored_regions.logical_or_(newly_visited)
         candidates = ~self.explored_regions & search_active.unsqueeze(1)
         distances = self.distance_to_region(
             palm_xy.unsqueeze(1), self.centers.unsqueeze(0)

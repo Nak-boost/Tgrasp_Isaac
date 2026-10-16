@@ -1,15 +1,10 @@
 graphics_device_id: 0
-dexrep:
-  sample_method: 'average'
-  sample_num_points: 2048
-  batch_norm_pnfeat: False
-  ambient_voxel_length: 0.02
-  dis_max_range: 0.2
 env:
   env_name: "shadow_hand_grasp_dexrep"
   numEnvs: 1024
   envSpacing: 1.5
-  episodeLength: 400
+  episodeLength: 1600
+  ppoRolloutSteps: 32
   enableDebugVis: False
   aggregateMode: 1
 
@@ -26,7 +21,7 @@ env:
   useRelativeControl: False
   dofSpeedScale: 20.0
   actionsMovingAverage: 0.2
-  controlFrequencyInv: 1 # 60 Hz
+  controlFrequencyInv: 1
 
   startPositionNoise: 0.0
   startRotationNoise: 0.0
@@ -36,27 +31,23 @@ env:
   resetDofPosRandomInterval: 0.0
   resetDofVelRandomInterval: 0.0
 
-  # Scale for signed hand-object distance progress.
-  distRewardScale: 2
+  distRewardScale: 0.5
   transition_scale: 0.15
   orientation_scale: 0.1
   rotRewardScale: 1.0
   rotEps: 0.1
   actionPenaltyScale: -0.0002
-  reachGoalBonus: 40
+  reachGoalBonus: 160
   fallDistance: 0.4
   fallPenalty: 0.0
 
   objectType: "pot" 
   observationType: "tactile"
 
-  # obs_dim is rebuilt at runtime from tactile.experiment.
-  # The values below describe E1 and preserve prop as the first branch,
-  # which is required by PPO1 RolloutStorage.
   obs_dim:
-    prop: 89
-    current_touch: 14
+    prop: 1040
     relative_object_position: 3
+    voxel_map: 32768
 
   obs_encoders:
     prop:
@@ -64,71 +55,21 @@ env:
       hidden_dims: [256, 128]
       activation: "elu"
       embedding_normalization: "layer_norm"
-
-    current_touch:
-      type: "touch"
-      hidden_dims: [32, 64]
-      activation: "elu"
-      # Raw binary touch is not normalized; only its learned embedding is.
-      embedding_normalization: "layer_norm"
-
     relative_object_position:
-      # Keep the scaled x/y/z displacement interpretable and bypass the
-      # common 128-dimensional learned embedding.
       type: "identity"
-
-    oracle_object:
-      type: "object"
-      hidden_dims: [128, 128]
-      activation: "elu"
-      embedding_normalization: "layer_norm"
-
-    pointnet_global:
-      type: "pointnet_global"
-      hidden_dims: [512, 256]
-      activation: "elu"
-      embedding_normalization: "layer_norm"
-
-    dexrep_interaction:
-      type: "dexrep_interaction"
-      embedding_normalization: "layer_norm"
-
     voxel_map:
       type: "voxel"
-      embedding_normalization: "layer_norm"
-
-    touch_history:
-      type: "history"
-      frame_hidden_dims: [128]
-      frame_embedding_dim: 128
-      recurrent_hidden_dim: 128
-      activation: "elu"
       embedding_normalization: "layer_norm"
 
   tactile:
     enabled: True
 
-    # The loaded Shadow Hand has 22 joint DOFs. The policy still has
-    # 24 actions: 6 floating-base commands and 18 actuator commands.
     hand_dof_count: 22
 
-    # Every experiment includes prop + current touch + optional relative position.
-    # E2 additionally uses object orientation/velocity and frozen PointNet.
-    # E3 adds voxel map; E4 adds touch history.
-    # E5 adds oracle state, frozen PointNet and DexRep interaction.
     experiment: "E2"
-
-    oracle_geometry:
-      pointnet_global_dim: 1024
-      dexrep_interaction_dim: 2360
-      dexrep_distance_dim: 80
-      dexrep_occupancy_grid_size: [10, 10, 10]
-      dexrep_keypoint_count: 20
-      dexrep_local_feature_dim: 64
+    contact_loss_reset_steps: 100
 
     relative_object_position:
-      # Estimate object position from current and previous tactile contacts.
-      # Estimator quality is internal; the policy still receives only XYZ.
       enabled: True
       source: "tactile_estimate"
       mask_probability: 0.0
@@ -148,81 +89,70 @@ env:
         maximum_height_above_table: 0.40
 
     touch:
-      # Five distal, four middle, four proximal and one palm-side pad.
       layout: "pad14"
       asset_file: "mjcf/open_ai_assets/hand/shadow_hand_tactile.xml"
-      # Project each pad contact force onto its inward surface normal.
       force_mode: "normal"
-      # Compressive normal-force units (N).
-      # Hysteresis avoids rapid binary-touch switching near threshold.
       on_threshold: 1.0
       off_threshold: 0.5
-      # Ignore contacts whose sensor centre is within 5 mm of the table.
-      minimum_height_above_table: 0.005
 
     reward:
-      # Shared by E1-E5. All terms are dense and use five-finger
-      # contact aggregation rather than counting individual link sensors.
-      # Per-step reward for each non-thumb finger in stable contact,
-      # provided the thumb is also in stable contact.
-      multi_contact_hold: 0.02
-      # A lift-ready grasp requires thumb + any other finger for this
-      # many consecutive control steps.
+      per_finger_contact: 0.01
+      valid_grasp_contact: 0.02
       valid_grasp_steps: 3
-      # Reward moderate positive hand-base Z actions only after a valid
-      # grasp and only until the object reaches the lift target.
       upward_action: 0.075
       upward_action_saturation: 0.3
-      # Per-step dense height reward, paid only while at least two
-      # different fingers maintain contact across two simulation steps.
-      # At the 12 cm target this term is 0.25.
-      lift_height: 0.25
-      # Required object height increase relative to reset height.
+      lift_height: 0.5
       lift_target_height: 0.12
-      # Additional per-step reward while the object remains above target.
       lift_hold: 0.5
-      # Reset after this many consecutive steps above target.
       lift_hold_steps: 10
 
-      # Signed reach progress uses the palm and the mean distance of
-      # distal, middle and proximal finger-link keypoints. It is not
-      # reduced after contact.
+      estimated_reach: 1.0
       reach_palm_weight: 0.5
       reach_distal_weight: 1.0
       reach_middle_weight: 0.25
       reach_proximal_weight: 0.0
 
+      voxel_exploration: 0.01
+      voxel_exploration_new_voxel_cap: 4
+      voxel_exploration_min_height_above_table: 0.015
+      voxel_exploration_max_height_above_table: 0.20
+      region_exploration:
+        scale: 1.0
+        visit_radius: 0.03
+        visit_bonus: 0.1
+        height_above_table: 0.05
+        height_layers: 3
+
     history:
-      # Each frame contains:
-      # tactile-link positions (42), touch (14),
-      # q/qd/wrist proprioception (50), previous action (24).
       length: 8
+      stride: 3
       frame_dim: 130
+      persistent_memory: True
+      memory_hidden_dim: 128
 
     voxel:
-      # Channel 0: occupancy (-1 unknown, 0 free, +1 contact).
-      # Channel 1: recency (1 current, decays toward 0).
       channels: 2
       grid_size: [32, 32, 16]
-      lower: [-0.35, -0.35, 0.55]
+      lower: [-0.35, -0.35, 0.60]
       upper: [0.35, 0.35, 0.95]
 
-      # Expired observations become unknown again.
       recency_decay: 0.98
       expiration_threshold: 0.1
 
-      # The CNN stem produces 4x4x2 spatial tokens.
       transformer_layers: 2
       attention_heads: 4
       feedforward_dim: 128
 
+    local_voxel:
+      enabled: False
+
   objectPositionRandomization:
     enabled: True
-    xRange: [-0.15, 0.15]
-    yRange: [-0.15, 0.15]
+    xRange: [-0.25, 0.25]
+    yRange: [-0.25, 0.25]
 
   handAgentIndex: "[[0, 1, 2, 3, 4, 5]]"
-  asymmetric_observations: False
+  asymmetric_observations: True
   successTolerance: 0.1
   printNumSuccesses: False
   maxConsecutiveSuccesses: 0
@@ -240,27 +170,27 @@ env:
 task:
   randomize: False
   randomization_params:
-    frequency: 600   # Define how many simulation steps between generating new randomizations
+    frequency: 600
     observations:
-      range: [ 0, .002 ] # range for the white noise
-      range_correlated: [ 0, .001 ] # range for correlated noise, refreshed with freq `frequency`
+      range: [ 0, .002 ]
+      range_correlated: [ 0, .001 ]
       operation: "additive"
       distribution: "gaussian"
-      schedule: "linear"   # "constant" is to turn on noise after `schedule_steps` num steps
+      schedule: "linear"
       schedule_steps: 40000
     actions:
       range: [ 0., .05 ]
-      range_correlated: [ 0, .015 ] # range for correlated noise, refreshed with freq `frequency`
+      range_correlated: [ 0, .015 ]
       operation: "additive"
       distribution: "gaussian"
-      schedule: "linear"  # "linear" will linearly interpolate between no rand and max rand
+      schedule: "linear"
       schedule_steps: 40000
     sim_params:
       gravity:
         range: [ 0, 0.4 ]
         operation: "additive"
         distribution: "gaussian"
-        schedule: "linear"  # "linear" will linearly interpolate between no rand and max rand
+        schedule: "linear"
         schedule_steps: 40000
     actor_params:
       hand:
@@ -270,45 +200,45 @@ task:
             range: [ 0.3, 3.0 ]
             operation: "scaling"
             distribution: "loguniform"
-            schedule: "linear"  # "linear" will scale the current random sample by `min(current num steps, schedule_steps) / schedule_steps`
+            schedule: "linear"
             schedule_steps: 30000
           stiffness:
             range: [ 0.75, 1.5 ]
             operation: "scaling"
             distribution: "loguniform"
-            schedule: "linear"  # "linear" will scale the current random sample by `min(current num steps, schedule_steps) / schedule_steps`
+            schedule: "linear"
             schedule_steps: 30000
         dof_properties:
           damping:
             range: [ 0.3, 3.0 ]
             operation: "scaling"
             distribution: "loguniform"
-            schedule: "linear"  # "linear" will scale the current random sample by `min(current num steps, schedule_steps) / schedule_steps`
+            schedule: "linear"
             schedule_steps: 30000
           stiffness:
             range: [ 0.75, 1.5 ]
             operation: "scaling"
             distribution: "loguniform"
-            schedule: "linear"  # "linear" will scale the current random sample by `min(current num steps, schedule_steps) / schedule_steps`
+            schedule: "linear"
             schedule_steps: 30000
           lower:
             range: [ 0, 0.01 ]
             operation: "additive"
             distribution: "gaussian"
-            schedule: "linear"  # "linear" will scale the current random sample by `min(current num steps, schedule_steps) / schedule_steps`
+            schedule: "linear"
             schedule_steps: 30000
           upper:
             range: [ 0, 0.01 ]
             operation: "additive"
             distribution: "gaussian"
-            schedule: "linear"  # "linear" will scale the current random sample by `min(current num steps, schedule_steps) / schedule_steps`
+            schedule: "linear"
             schedule_steps: 30000
         rigid_body_properties:
           mass:
             range: [ 0.5, 1.5 ]
             operation: "scaling"
             distribution: "uniform"
-            schedule: "linear"  # "linear" will scale the current random sample by `min(current num steps, schedule_steps) / schedule_steps`
+            schedule: "linear"
             schedule_steps: 30000
         rigid_shape_properties:
           friction:
@@ -316,21 +246,21 @@ task:
             range: [ 0.7, 1.3 ]
             operation: "scaling"
             distribution: "uniform"
-            schedule: "linear"  # "linear" will scale the current random sample by `min(current num steps, schedule_steps) / schedule_steps`
+            schedule: "linear"
             schedule_steps: 30000
       object:
         scale:
           range: [ 0.95, 1.05 ]
           operation: "scaling"
           distribution: "uniform"
-          schedule: "linear"  # "linear" will scale the current random sample by ``min(current num steps, schedule_steps) / schedule_steps`
+          schedule: "linear"
           schedule_steps: 30000
         rigid_body_properties:
           mass:
             range: [ 0.5, 1.5 ]
             operation: "scaling"
             distribution: "uniform"
-            schedule: "linear"  # "linear" will scale the current random sample by ``min(current num steps, schedule_steps) / schedule_steps`
+            schedule: "linear"
             schedule_steps: 30000
         rigid_shape_properties:
           friction:
@@ -338,17 +268,16 @@ task:
             range: [ 0.7, 1.3 ]
             operation: "scaling"
             distribution: "uniform"
-            schedule: "linear"  # "linear" will scale the current random sample by `min(current num steps, schedule_steps) / schedule_steps`
+            schedule: "linear"
             schedule_steps: 30000
 
 sim:
   substeps: 2
   physx:
     num_threads: 4
-    solver_type: 1  # 0: pgs, 1: tgs
-    # Required by net_contact_force_tensor; collect every substep.
+    solver_type: 1
     contact_collection: 2
-    num_position_iterations: 8 # 8 bottle
+    num_position_iterations: 8
     num_velocity_iterations: 0
     contact_offset: 0.002
     rest_offset: 0.0
