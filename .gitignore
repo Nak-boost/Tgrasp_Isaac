@@ -20,6 +20,9 @@ dexgrasp/logs/
 patch_tmp/
 Papers/
 
+# Local evaluation tools and experiment notes
+/dexgrasp/local_evaluation/
+
 # Python package build
 *.egg-info/
 build/

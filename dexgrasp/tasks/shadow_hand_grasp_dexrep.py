@@ -1152,7 +1152,7 @@ class ShadowHandGraspDexRep(BaseTask):
         asset_options.collapse_fixed_joints = True
         asset_options.disable_gravity = True
         asset_options.thickness = 0.001
-        table_asset = self.gym.create_box(self.sim, table_dims.x, table_dims.y, table_dims.z, gymapi.AssetOptions())
+        table_asset = self.gym.create_box(self.sim, table_dims.x, table_dims.y, table_dims.z, asset_options)
         return table_asset, table_dims
 
     def _load_object_asset(self, assets_path):
