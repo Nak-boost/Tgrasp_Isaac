@@ -3,18 +3,36 @@ env:
   env_name: "shadow_hand_grasp_dexrep"
   numEnvs: 1024
   envSpacing: 1.5
-  episodeLength: 1600
+  episodeLength: 800
   ppoRolloutSteps: 32
   enableDebugVis: False
   aggregateMode: 1
 
-  random_time: True
+  random_time: False
   goal_cond: False
-  num_objs: 2
+  num_objs: 20
 
   object_code_dict:
+    - 'hammer'
+    - 'cubesmall'
+    - 'banana'
+    - 'stamp'
     - 'cubemedium'
+    - 'toruslarge'
+    - 'duck'
     - 'spherelarge'
+    - 'mouse'
+    - 'airplane'
+    - 'cylinderlarge'
+    - 'stapler'
+    - 'flute'
+    - 'piggybank'
+    - 'alarmclock'
+    - 'eyeglasses'
+    - 'gamecontroller'
+    - 'phone'
+    - 'torusmedium'
+    - 'knife'
 
   stiffnessScale: 1.0
   forceLimitScale: 1.0
@@ -67,6 +85,8 @@ env:
     hand_dof_count: 22
 
     experiment: "E2"
+    search_only: True
+    search_success_bonus: 10.0
     contact_loss_reset_steps: 100
 
     relative_object_position:
@@ -114,13 +134,13 @@ env:
 
       voxel_exploration: 0.01
       voxel_exploration_new_voxel_cap: 4
-      voxel_exploration_min_height_above_table: 0.015
-      voxel_exploration_max_height_above_table: 0.20
+      voxel_exploration_min_height_above_table: 0.05
+      voxel_exploration_max_height_above_table: 0.15
       region_exploration:
         scale: 1.0
         visit_radius: 0.03
         visit_bonus: 0.1
-        height_above_table: 0.05
+        height_above_table: 0.10
         height_layers: 3
 
     history:
@@ -148,8 +168,8 @@ env:
 
   objectPositionRandomization:
     enabled: True
-    xRange: [-0.25, 0.25]
-    yRange: [-0.25, 0.25]
+    xRange: [-0.15, 0.15]
+    yRange: [-0.15, 0.15]
 
   handAgentIndex: "[[0, 1, 2, 3, 4, 5]]"
   asymmetric_observations: True

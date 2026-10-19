@@ -84,6 +84,8 @@ def load_cfg(args, use_rlg_config=False):
 
     if args.algo == "ppo1" and "ppoRolloutSteps" in cfg["env"]:
         cfg_train["learn"]["nsteps"] = cfg["env"]["ppoRolloutSteps"]
+    if args.algo == "ppo1" and cfg["env"].get("tactile", {}).get("search_only", False):
+        cfg_train["learn"].setdefault("upward_action_supervision", {})["enabled"] = False
 
     if args.history_length > 0:
         if args.history_length not in (4, 8, 16):

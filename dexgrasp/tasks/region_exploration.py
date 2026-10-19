@@ -7,7 +7,7 @@ class RegionExplorationReward:
     def __init__(
         self, num_envs, grid_size, voxel_lower, voxel_upper,
         search_lower, search_upper, reference_height, height_layers=3,
-        visit_radius=0.03, scale=1.0, visit_bonus=0.0,
+        visit_radius=0.03, scale=1.0, visit_bonus=0.0, center_guidance=False,
     ):
         if height_layers not in (2, 3) or height_layers > grid_size[2]:
             raise ValueError("Region exploration requires two or three height layers")
@@ -33,6 +33,7 @@ class RegionExplorationReward:
         self.visit_bonus = visit_bonus
         self.visit_radius = visit_radius
         self.center_height = reference_height
+        self.center_guidance = center_guidance
         device = voxel_lower.device
         cell_size = (voxel_upper - voxel_lower) / voxel_lower.new_tensor(grid_size)
         layer_start = round(
@@ -72,11 +73,22 @@ class RegionExplorationReward:
         self.explored_regions = torch.zeros(num_envs, 9, dtype=torch.bool, device=device)
         self.target = torch.zeros(num_envs, 2, device=device)
         self.target_valid = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        self.target_index = torch.zeros(num_envs, dtype=torch.long, device=device)
         self.previous_distance = torch.zeros(num_envs, device=device)
 
     def distance_to_region(self, palm_xy, centers):
         offsets = (torch.abs(palm_xy - centers) - self.region_half_size).clamp(min=0)
         return torch.norm(offsets, dim=-1)
+
+    def observation(self, palm_position):
+        relative_target = torch.cat((
+            self.target - palm_position[:, :2],
+            self.center_height - palm_position[:, 2:3],
+        ), dim=-1)
+        relative_target = torch.where(
+            self.target_valid.unsqueeze(1), relative_target, torch.zeros_like(relative_target),
+        )
+        return torch.cat((self.explored_regions.float(), relative_target), dim=-1)
 
     @torch.no_grad()
     def update(self, occupancy, palm_position, search_active):
@@ -87,6 +99,8 @@ class RegionExplorationReward:
         )
         reached_centers = center_distances <= self.visit_radius
         current_distance = self.distance_to_region(palm_xy, self.target)
+        if self.center_guidance:
+            current_distance = center_distances.gather(1, self.target_index[:, None]).squeeze(1)
         reward = torch.where(
             self.target_valid & search_active,
             self.scale * (self.previous_distance - current_distance),
@@ -106,7 +120,13 @@ class RegionExplorationReward:
         distances = self.distance_to_region(
             palm_xy.unsqueeze(1), self.centers.unsqueeze(0)
         )
+        if self.center_guidance:
+            distances = center_distances
         target_index = distances.masked_fill(~candidates, float("inf")).argmin(dim=1)
+        if self.center_guidance:
+            keep_target = self.target_valid & candidates.gather(1, self.target_index[:, None]).squeeze(1)
+            target_index = torch.where(keep_target, self.target_index, target_index)
+        self.target_index.copy_(target_index)
         self.target.copy_(self.centers[target_index])
         self.previous_distance.copy_(
             distances.gather(1, target_index.unsqueeze(1)).squeeze(1)
@@ -119,4 +139,5 @@ class RegionExplorationReward:
         self.explored_regions[env_ids] = False
         self.target[env_ids] = 0
         self.target_valid[env_ids] = False
+        self.target_index[env_ids] = 0
         self.previous_distance[env_ids] = 0

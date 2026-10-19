@@ -14,7 +14,7 @@ env:
   enableDebugVis: False
   aggregateMode: 1
 
-  random_time: True
+  random_time: False
   goal_cond: False
   num_objs: 2
 
@@ -113,6 +113,8 @@ env:
     # E3 adds voxel map; E4 adds touch history.
     # E5 adds oracle state, frozen PointNet and DexRep interaction.
     experiment: "E3"
+    search_only: True
+    search_success_bonus: 10.0
     contact_loss_reset_steps: 100
 
     relative_object_position:
@@ -178,15 +180,15 @@ env:
 
       # Reward newly explored free voxels until the first valid estimate.
       # Duplicate sensor observations in one step count as one voxel.
-      voxel_exploration: 0.01
+      voxel_exploration: 0.05
       voxel_exploration_new_voxel_cap: 4
-      voxel_exploration_min_height_above_table: 0.015
-      voxel_exploration_max_height_above_table: 0.20
+      voxel_exploration_min_height_above_table: 0.05
+      voxel_exploration_max_height_above_table: 0.15
       region_exploration:
-        scale: 1.0
+        scale: 2.0
         visit_radius: 0.03
-        visit_bonus: 0.1
-        height_above_table: 0.05
+        visit_bonus: 1.0
+        height_above_table: 0.10
         height_layers: 3
 
     history:

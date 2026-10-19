@@ -71,6 +71,9 @@ class ShadowHandGraspDexRep(BaseTask):
             "experiment", "E1"
         ).upper()
         self.voxel_enabled = self.tactile_experiment in {"E2", "E3"}
+        self.search_only = bool(self.tactile_cfg.get("search_only", False))
+        if self.search_only and (not self.tactile_enabled or not self.voxel_enabled):
+            raise ValueError("Search-only training requires tactile E2 or E3")
         self.local_voxel_enabled = bool(
             self.tactile_cfg.get("local_voxel", {}).get("enabled", True)
         ) and self.tactile_experiment == "E3"
@@ -359,6 +362,9 @@ class ShadowHandGraspDexRep(BaseTask):
                     history_length * self.history_frame_dim
                 )
 
+            if self.search_only:
+                obs_dim["search_regions"] = 12
+                self.cfg["env"].setdefault("obs_encoders", {})["search_regions"] = {"type": "identity"}
             self.cfg["env"]["obs_dim"] = obs_dim
             self.cfg["env"]["numObservations"] = sum(obs_dim.values())
 
@@ -859,6 +865,7 @@ class ShadowHandGraspDexRep(BaseTask):
             if self.voxel_enabled and (
                 region_cfg.get("scale", 0.0) != 0
                 or region_cfg.get("visit_bonus", 0.0) != 0
+                or self.search_only
             ):
                 if not position_cfg.get("enabled", False):
                     raise ValueError(
@@ -878,6 +885,7 @@ class ShadowHandGraspDexRep(BaseTask):
                     visit_radius=region_cfg.get("visit_radius", 0.03),
                     scale=region_cfg.get("scale", 0.0),
                     visit_bonus=region_cfg.get("visit_bonus", 0.0),
+                    center_guidance=self.search_only,
                 )
             if self.tactile_experiment == "E3" and self.local_voxel_enabled:
                 local_cfg = self.tactile_cfg["local_voxel"]
@@ -1173,7 +1181,7 @@ class ShadowHandGraspDexRep(BaseTask):
         asset_options.collapse_fixed_joints = True
         asset_options.disable_gravity = True
         asset_options.thickness = 0.001
-        table_asset = self.gym.create_box(self.sim, table_dims.x, table_dims.y, table_dims.z, asset_options)
+        table_asset = self.gym.create_box(self.sim, table_dims.x, table_dims.y, table_dims.z, gymapi.AssetOptions())
         return table_asset, table_dims
 
     def _load_object_asset(self, assets_path):
@@ -1367,7 +1375,7 @@ class ShadowHandGraspDexRep(BaseTask):
         self.reset_buf.masked_fill_(contact_lost, 1)
         self.extras["contact_loss_timeout"] = contact_lost.float()
 
-    def compute_reward(self, actions, id=-1):
+    def compute_grasp_reward(self, actions, id=-1):
         self.dof_pos = self.shadow_hand_dof_pos
 
         if self.tactile_enabled:
@@ -1428,6 +1436,33 @@ class ShadowHandGraspDexRep(BaseTask):
                 self.rew_buf.add_(self.voxel_exploration_reward)
                 self.rew_buf.add_(self.region_exploration_reward)
 
+    def compute_search_reward(self):
+        self.update_valid_grasp()
+        self.compute_touch_reward()
+        found = (self.binary_touch > 0.5).any(dim=1)
+        self.successes.copy_(found.float())
+        self.rew_buf.copy_(
+            self.voxel_exploration_reward + self.region_exploration_reward
+            + self.action_penalty_scale * self.actions.square().sum(dim=-1)
+            + float(self.tactile_cfg.get("search_success_bonus", 10.0)) * found.float()
+        )
+        done = found | (self.progress_buf >= self.max_episode_length)
+        self.reset_buf.copy_(done.long())
+        self.reset_goal_buf.copy_(self.reset_buf)
+        self.current_successes.copy_(torch.where(done, self.successes, self.current_successes))
+        completed = done.sum()
+        self.consecutive_successes.copy_(torch.where(
+            completed > 0,
+            self.av_factor * (found & done).sum().float() / completed.clamp(min=1)
+            + (1.0 - self.av_factor) * self.consecutive_successes,
+            self.consecutive_successes,
+        ))
+
+    def compute_reward(self, actions, id=-1):
+        if self.search_only:
+            self.compute_search_reward()
+        else:
+            self.compute_grasp_reward(actions, id)
         self.extras['successes'] = self.successes
         self.extras['current_successes'] = self.current_successes
         self.extras['consecutive_successes'] = self.consecutive_successes
@@ -1474,6 +1509,7 @@ class ShadowHandGraspDexRep(BaseTask):
             )
             self.extras["upward_action_supervision_mask"] = (
                 self.valid_grasp_mask
+                & (not self.search_only)
                 & (
                     self.object_pos[:, 2] - self.episode_object_start_height
                     < self.touch_lift_target_height
@@ -2320,9 +2356,11 @@ class ShadowHandGraspDexRep(BaseTask):
             current_free,
             occupancy_map < -0.5,
         )
-        newly_explored_free.logical_and_(
-            torch.logical_not(self.episode_had_valid_estimate).unsqueeze(1)
+        search_active = (
+            ~self.episode_had_contact if self.search_only
+            else ~self.episode_had_valid_estimate
         )
+        newly_explored_free.logical_and_(search_active.unsqueeze(1))
         newly_explored_free.logical_and_(self.voxel_exploration_mask)
         new_voxel_count = newly_explored_free.sum(dim=1).float()
         self.voxel_exploration_reward.copy_(
@@ -2345,7 +2383,7 @@ class ShadowHandGraspDexRep(BaseTask):
                 self.region_exploration.update(
                     self.voxel_map[:, 0],
                     self.rigid_body_states[:, self.hand_body_idx_dict["palm"], :3],
-                    ~self.episode_had_valid_estimate,
+                    search_active,
                 )
             )
 
@@ -2515,6 +2553,10 @@ class ShadowHandGraspDexRep(BaseTask):
                 )
             )
 
+        if self.search_only:
+            observation_branches.append(self.region_exploration.observation(
+                self.rigid_body_states[:, self.hand_body_idx_dict["palm"], :3],
+            ))
         observations = torch.cat(observation_branches, dim=1)
         expected_dim = sum(self.cfg["env"]["obs_dim"].values())
         if observations.shape[1] != expected_dim:
