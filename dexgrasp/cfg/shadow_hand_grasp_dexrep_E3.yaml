@@ -57,7 +57,7 @@ env:
   # which is required by PPO1 RolloutStorage.
   obs_dim:
     prop: 89
-    current_touch: 14
+    current_touch: 56
     relative_object_position: 3
 
   obs_encoders:
@@ -103,6 +103,10 @@ env:
 
   tactile:
     enabled: True
+    workspace:
+      enabled: True
+      max_height_above_table: 0.50
+      failure_penalty: 10.0
 
     # The loaded Shadow Hand has 22 joint DOFs. The policy still has
     # 24 actions: 6 floating-base commands and 18 actuator commands.
@@ -139,6 +143,8 @@ env:
         maximum_height_above_table: 0.40
 
     touch:
+      include_sensor_positions: True
+      position_scale: 0.20
       # Five distal, four middle, four proximal and one palm-side pad.
       layout: "pad14"
       asset_file: "mjcf/open_ai_assets/hand/shadow_hand_tactile.xml"

@@ -34,6 +34,9 @@ _TACTILE_EPISODE_METRICS = {
     "contact_step_ratio": ("Contact-step ratio", 100.0),
     "contact_losses": ("Contact losses per episode", 1.0),
     "regions_explored": ("Visited regions per episode", 1.0),
+    "workspace_failure": ("Workspace failure rate", 100.0),
+    "workspace_outside_table": ("Outside-table termination rate", 100.0),
+    "workspace_above_height": ("Height-limit termination rate", 100.0),
 }
 
 _UPWARD_SUPERVISION_MASK = "upward_action_supervision_mask"

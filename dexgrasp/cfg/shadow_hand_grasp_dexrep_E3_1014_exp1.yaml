@@ -57,7 +57,7 @@ env:
   # which is required by PPO1 RolloutStorage.
   obs_dim:
     prop: 89
-    current_touch: 14
+    current_touch: 56
     relative_object_position: 3
 
   obs_encoders:
@@ -103,6 +103,10 @@ env:
 
   tactile:
     enabled: True
+    workspace:
+      enabled: True
+      max_height_above_table: 0.50
+      failure_penalty: 10.0
 
     # The loaded Shadow Hand has 22 joint DOFs. The policy still has
     # 24 actions: 6 floating-base commands and 18 actuator commands.
@@ -113,6 +117,7 @@ env:
     # E3 adds voxel map; E4 adds touch history.
     # E5 adds oracle state, frozen PointNet and DexRep interaction.
     experiment: "E3"
+    region_observation: True
     contact_loss_reset_steps: 100
 
     relative_object_position:
@@ -137,6 +142,8 @@ env:
         maximum_height_above_table: 0.40
 
     touch:
+      include_sensor_positions: True
+      position_scale: 0.20
       # Five distal, four middle, four proximal and one palm-side pad.
       layout: "pad14"
       asset_file: "mjcf/open_ai_assets/hand/shadow_hand_tactile.xml"
@@ -180,8 +187,8 @@ env:
       # Duplicate sensor observations in one step count as one voxel.
       voxel_exploration: 0.02
       voxel_exploration_new_voxel_cap: 4
-      voxel_exploration_min_height_above_table: 0.015
-      voxel_exploration_max_height_above_table: 0.20
+      voxel_exploration_min_height_above_table: 0.05
+      voxel_exploration_max_height_above_table: 0.15
       region_exploration:
         scale: 1.0
         visit_radius: 0.03

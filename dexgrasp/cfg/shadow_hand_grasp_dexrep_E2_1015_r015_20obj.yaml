@@ -81,10 +81,15 @@ env:
 
   tactile:
     enabled: True
+    workspace:
+      enabled: True
+      max_height_above_table: 0.50
+      failure_penalty: 10.0
 
     hand_dof_count: 22
 
     experiment: "E2"
+    region_observation: True
     contact_loss_reset_steps: 100
 
     relative_object_position:
@@ -132,8 +137,8 @@ env:
 
       voxel_exploration: 0.01
       voxel_exploration_new_voxel_cap: 4
-      voxel_exploration_min_height_above_table: 0.015
-      voxel_exploration_max_height_above_table: 0.20
+      voxel_exploration_min_height_above_table: 0.05
+      voxel_exploration_max_height_above_table: 0.15
       region_exploration:
         scale: 1.0
         visit_radius: 0.03
@@ -171,6 +176,10 @@ env:
 
   handAgentIndex: "[[0, 1, 2, 3, 4, 5]]"
   asymmetric_observations: True
+  privileged_geometry:
+    enabled: True
+    num_points: 256
+    distance_scale: 0.20
   successTolerance: 0.1
   printNumSuccesses: False
   maxConsecutiveSuccesses: 0

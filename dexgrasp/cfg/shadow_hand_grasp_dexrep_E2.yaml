@@ -81,6 +81,10 @@ env:
 
   tactile:
     enabled: True
+    workspace:
+      enabled: True
+      max_height_above_table: 0.50
+      failure_penalty: 10.0
 
     hand_dof_count: 22
 
