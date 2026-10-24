@@ -103,6 +103,9 @@ env:
 
   tactile:
     enabled: True
+    initial_hand:
+      corner: True
+      height_above_table: 0.05
     workspace:
       enabled: True
       max_height_above_table: 0.50
@@ -188,13 +191,14 @@ env:
       # Duplicate sensor observations in one step count as one voxel.
       voxel_exploration: 0.05
       voxel_exploration_new_voxel_cap: 4
-      voxel_exploration_min_height_above_table: 0.05
-      voxel_exploration_max_height_above_table: 0.15
+      voxel_exploration_height_layers: 5
+      palm_up_penalty: 0.05
+      palm_up_penalty_angle_degrees: 60.0
       region_exploration:
         scale: 2.0
         visit_radius: 0.03
         visit_bonus: 1.0
-        height_above_table: 0.10
+        height_above_table: 0.03
         height_layers: 3
 
     history:

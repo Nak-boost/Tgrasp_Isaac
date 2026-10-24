@@ -677,6 +677,20 @@ class ShadowHandGraspDexRep(BaseTask):
                     "voxel_exploration_new_voxel_cap", 4
                 )
             )
+            self.voxel_exploration_height_layers = int(
+                touch_reward_cfg.get("voxel_exploration_height_layers", 0)
+            )
+            self.palm_up_penalty_scale = float(
+                touch_reward_cfg.get("palm_up_penalty", 0.0)
+            )
+            self.palm_up_penalty_angle = float(
+                touch_reward_cfg.get("palm_up_penalty_angle_degrees", 60.0)
+            )
+            if not np.isfinite(self.palm_up_penalty_scale) or self.palm_up_penalty_scale < 0:
+                raise ValueError("palm_up_penalty must be finite and non-negative")
+            if not 0.0 < self.palm_up_penalty_angle < 180.0:
+                raise ValueError("palm_up_penalty_angle_degrees must be between 0 and 180")
+            self.palm_up_penalty_cosine = float(np.cos(np.deg2rad(self.palm_up_penalty_angle)))
             self.voxel_exploration_min_height_above_table = float(
                 touch_reward_cfg.get(
                     "voxel_exploration_min_height_above_table", 0.005
@@ -859,6 +873,18 @@ class ShadowHandGraspDexRep(BaseTask):
                 (voxel_lower_edges >= reward_lower_z)
                 & (voxel_lower_edges + voxel_height <= reward_upper_z)
             )
+            if self.voxel_exploration_height_layers:
+                if not 1 <= self.voxel_exploration_height_layers <= self.voxel_grid_size[2]:
+                    raise ValueError("voxel_exploration_height_layers exceeds the voxel grid")
+                layer_start = int(round(float((self.table_top_z - self.voxel_lower[2]) / voxel_height)))
+                if (
+                    layer_start < 0
+                    or layer_start + self.voxel_exploration_height_layers > self.voxel_grid_size[2]
+                    or abs(float(voxel_lower_edges[layer_start]) - self.table_top_z) > 1e-5
+                ):
+                    raise ValueError("Exploration layers must start at a voxel edge at table height")
+                eligible_z = torch.zeros_like(eligible_z)
+                eligible_z[layer_start:layer_start + self.voxel_exploration_height_layers] = True
             position_cfg = self.cfg["env"].get("objectPositionRandomization", {})
             position_ranges = to_torch(
                 [position_cfg.get("xRange", [-0.15, 0.15]),
@@ -1019,6 +1045,25 @@ class ShadowHandGraspDexRep(BaseTask):
             [table_pose.p.x + table_dims.x / 2, table_pose.p.y + table_dims.y / 2],
             device=self.device,
         )
+        initial_hand_cfg = self.tactile_cfg.get("initial_hand", {})
+        if self.voxel_enabled and initial_hand_cfg.get("corner", False):
+            position_cfg = self.cfg["env"].get("objectPositionRandomization", {})
+            if not position_cfg.get("enabled", False):
+                raise ValueError("Corner initialization requires object position randomization")
+            hand_height = float(initial_hand_cfg.get("height_above_table", 0.05))
+            if not np.isfinite(hand_height) or hand_height <= 0:
+                raise ValueError("Initial hand height must be finite and positive")
+            x_range = position_cfg.get("xRange", [-0.15, 0.15])
+            y_range = position_cfg.get("yRange", [-0.15, 0.15])
+            shadow_hand_start_pose.p = gymapi.Vec3(
+                object_start_pose.p.x + x_range[0],
+                object_start_pose.p.y + y_range[1],
+                self.table_top_z + hand_height,
+            )
+            inward_yaw = np.arctan2(-(y_range[1] - y_range[0]), x_range[1] - x_range[0]) + np.pi / 2
+            shadow_hand_start_pose.r = gymapi.Quat.from_axis_angle(
+                gymapi.Vec3(0, 0, 1), float(inward_yaw)
+            ) * gymapi.Quat.from_axis_angle(gymapi.Vec3(1, 0, 0), np.pi / 2)
 
         # compute aggregate size
         # max_agg_bodies = self.num_shadow_hand_bodies * 1 + 2 * self.num_object_bodies + 1  ##
@@ -1553,6 +1598,18 @@ class ShadowHandGraspDexRep(BaseTask):
             self.compute_search_reward()
         else:
             self.compute_grasp_reward(actions, id)
+        if self.tactile_enabled and self.palm_up_penalty_scale > 0:
+            palm_rotation = self.rigid_body_states[:, self.hand_body_idx_dict["palm"], 3:7]
+            outward_normal = torch.zeros(self.num_envs, 3, device=self.device)
+            outward_normal[:, 1] = -1.0
+            upward_alignment = quat_apply(palm_rotation, outward_normal)[:, 2]
+            penalty = self.palm_up_penalty_scale * (
+                (upward_alignment - self.palm_up_penalty_cosine)
+                / (1.0 - self.palm_up_penalty_cosine)
+            ).clamp(0.0, 1.0) * (~self.episode_had_contact).float()
+            self.rew_buf.sub_(penalty)
+            self.extras["palm_up_penalty"] = penalty
+            self.extras["palm_up_alignment"] = upward_alignment
         if self.workspace_limits_enabled:
             self.apply_workspace_limits(previous_consecutive_successes)
         self.extras['successes'] = self.successes
