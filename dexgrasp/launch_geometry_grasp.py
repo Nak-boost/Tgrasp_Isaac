@@ -20,7 +20,12 @@ def gpu_available(gpu, required_memory_mib):
         'nvidia-smi', '-i', str(gpu), '--query-gpu=memory.free',
         '--format=csv,noheader,nounits',
     ], text=True, timeout=15)
-    return int(output.strip()) >= required_memory_mib
+    if int(output.strip()) < required_memory_mib:
+        return False
+    processes = subprocess.check_output([
+        'nvidia-smi', '-i', str(gpu), '--query-compute-apps=pid', '--format=csv,noheader,nounits',
+    ], text=True, timeout=15)
+    return not processes.strip()
 
 
 def worker(job_path):
@@ -127,7 +132,7 @@ def main():
     parser.add_argument('--gpus', type=int, nargs='+', default=[2, 3, 0, 1])
     parser.add_argument('--any-free-gpu', action='store_true')
     parser.add_argument('--seeds', type=int, nargs='+', default=[42, 43])
-    parser.add_argument('--experiments', choices=['E2', 'E3', 'E3_2obj_nolocal', 'E3_20obj_local'],
+    parser.add_argument('--experiments', choices=['E2', 'E3', 'E3_2obj_nolocal', 'E3_20obj_local', 'E3_random_xy', 'E3_mixed_xy', 'E3_open_hand', 'E3_open_control'],
                         nargs='+', default=['E2', 'E3'])
     parser.add_argument('--iterations', type=int, default=10000)
     parser.add_argument('--num-envs', type=int, default=1024)
@@ -157,7 +162,7 @@ def main():
         cfg_train = runtime / ('cfg/ppo1/config.yaml' if experiment == 'E2'
                                else 'cfg/ppo1/config_E3_1015_exp1_resume.yaml')
         cfg = yaml.safe_load(cfg_env.read_text())
-        if experiment in ('E3_2obj_nolocal', 'E3_20obj_local'):
+        if experiment in ('E3_2obj_nolocal', 'E3_20obj_local', 'E3_random_xy', 'E3_mixed_xy', 'E3_open_hand', 'E3_open_control'):
             if experiment == 'E3_2obj_nolocal':
                 if len(cfg['env']['object_code_dict']) != 2:
                     raise ValueError('Expected the original two-object E3 configuration')
@@ -170,6 +175,18 @@ def main():
                 cfg['env']['object_code_dict'] = objects
                 cfg['env']['num_objs'] = len(objects)
                 cfg['env']['tactile']['local_voxel']['enabled'] = True
+            if experiment in ('E3_random_xy', 'E3_mixed_xy'):
+                cfg['env']['tactile']['initial_hand'].update(
+                    random_xy=True,
+                    inside_probability=1.0 if experiment == 'E3_random_xy' else 0.5,
+                    ring_margin=0.08,
+                    outside_height_above_table=0.05,
+                )
+            if experiment in ('E3_open_hand', 'E3_open_control'):
+                cfg['env']['tactile']['initial_hand'].update(
+                    corner=False, random_xy=True, inside_probability=1.0,
+                )
+                cfg['env']['tactile']['reward']['open_hand_penalty'] = 0.005 if experiment == 'E3_open_hand' else 0.0
             cfg_env = runtime / ('cfg/shadow_hand_grasp_dexrep_' + experiment + '.yaml')
             cfg_env.write_text(yaml.safe_dump(cfg, sort_keys=False))
         if cfg['env']['tactile'].get('search_only', False) or not cfg['env']['privileged_geometry']['enabled']:
@@ -186,6 +203,9 @@ def main():
                        iterations=args.iterations, num_envs=args.num_envs,
                        eval_envs=args.eval_envs, eval_seeds=args.eval_seeds,
                        episode_length=cfg['env']['episodeLength'], objects=cfg['env']['object_code_dict'],
+                       initial_hand=cfg['env']['tactile'].get('initial_hand', {}),
+                       open_hand_penalty=cfg['env']['tactile']['reward'].get('open_hand_penalty', 0.0),
+                       oracle_reach_scale=cfg['env']['distRewardScale'],
                        local_voxel=cfg['env']['tactile']['local_voxel']['enabled'],
                        object_position_randomization=cfg['env']['objectPositionRandomization'])
             job_path = directory / 'job.json'

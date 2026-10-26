@@ -9,7 +9,7 @@ import os.path as osp
 from utils.torch_jit_utils import *
 from tasks.hand_base.base_task import BaseTask
 from tasks.region_exploration import RegionExplorationReward
-from tasks.object_position_sampling import sample_inner_outer_offsets
+from tasks.object_position_sampling import sample_hand_start_positions, sample_inner_outer_offsets
 from tasks.privileged_geometry import sample_object_surface, sensor_surface_features
 from isaacgym import gymtorch
 from isaacgym import gymapi
@@ -691,6 +691,19 @@ class ShadowHandGraspDexRep(BaseTask):
             if not 0.0 < self.palm_up_penalty_angle < 180.0:
                 raise ValueError("palm_up_penalty_angle_degrees must be between 0 and 180")
             self.palm_up_penalty_cosine = float(np.cos(np.deg2rad(self.palm_up_penalty_angle)))
+            self.open_hand_penalty_scale = float(touch_reward_cfg.get("open_hand_penalty", 0.0))
+            if not np.isfinite(self.open_hand_penalty_scale) or self.open_hand_penalty_scale < 0:
+                raise ValueError("open_hand_penalty must be finite and non-negative")
+            self.open_hand_reference = self.shadow_hand_default_dof_pos.clone()
+            dof_names = self.gym.get_actor_dof_names(self.envs[0], self.shadow_hands[0])
+            for joint_index, joint_name in enumerate(dof_names):
+                joint_name = joint_name.split(":")[-1]
+                if joint_name[:2] in ("FF", "MF", "RF", "LF") and joint_name[-2:] in ("J0", "J1", "J2"):
+                    self.open_hand_reference[joint_index] = 0.15
+                elif joint_name == "THJ0":
+                    self.open_hand_reference[joint_index] = -0.15
+                elif joint_name == "THJ3":
+                    self.open_hand_reference[joint_index] = 0.15
             self.voxel_exploration_min_height_above_table = float(
                 touch_reward_cfg.get(
                     "voxel_exploration_min_height_above_table", 0.005
@@ -951,7 +964,7 @@ class ShadowHandGraspDexRep(BaseTask):
                     visit_radius=region_cfg.get("visit_radius", 0.03),
                     scale=region_cfg.get("scale", 0.0),
                     visit_bonus=region_cfg.get("visit_bonus", 0.0),
-                    center_guidance=self.search_only,
+                    center_guidance=True,
                 )
             if self.tactile_experiment == "E3" and self.local_voxel_enabled:
                 local_cfg = self.tactile_cfg["local_voxel"]
@@ -1046,10 +1059,10 @@ class ShadowHandGraspDexRep(BaseTask):
             device=self.device,
         )
         initial_hand_cfg = self.tactile_cfg.get("initial_hand", {})
-        if self.voxel_enabled and initial_hand_cfg.get("corner", False):
+        if self.voxel_enabled and (initial_hand_cfg.get("corner", False) or initial_hand_cfg.get("random_xy", False)):
             position_cfg = self.cfg["env"].get("objectPositionRandomization", {})
             if not position_cfg.get("enabled", False):
-                raise ValueError("Corner initialization requires object position randomization")
+                raise ValueError("Planar hand initialization requires object position randomization")
             hand_height = float(initial_hand_cfg.get("height_above_table", 0.05))
             if not np.isfinite(hand_height) or hand_height <= 0:
                 raise ValueError("Initial hand height must be finite and positive")
@@ -1064,6 +1077,9 @@ class ShadowHandGraspDexRep(BaseTask):
             shadow_hand_start_pose.r = gymapi.Quat.from_axis_angle(
                 gymapi.Vec3(0, 0, 1), float(inward_yaw)
             ) * gymapi.Quat.from_axis_angle(gymapi.Vec3(1, 0, 0), np.pi / 2)
+            if initial_hand_cfg.get("random_xy", False):
+                shadow_hand_start_pose.p.x = object_start_pose.p.x
+                shadow_hand_start_pose.p.y = object_start_pose.p.y
 
         # compute aggregate size
         # max_agg_bodies = self.num_shadow_hand_bodies * 1 + 2 * self.num_object_bodies + 1  ##
@@ -1610,6 +1626,10 @@ class ShadowHandGraspDexRep(BaseTask):
             self.rew_buf.sub_(penalty)
             self.extras["palm_up_penalty"] = penalty
             self.extras["palm_up_alignment"] = upward_alignment
+        if self.tactile_enabled:
+            open_hand_penalty = self.compute_open_hand_penalty()
+            self.rew_buf.sub_(open_hand_penalty)
+            self.extras["open_hand_penalty"] = open_hand_penalty
         if self.workspace_limits_enabled:
             self.apply_workspace_limits(previous_consecutive_successes)
         self.extras['successes'] = self.successes
@@ -1677,6 +1697,12 @@ class ShadowHandGraspDexRep(BaseTask):
             + self.reach_proximal_weight * distances[:, 11:16].mean(dim=1)
         )
 
+    def compute_open_hand_penalty(self):
+        joint_range = (self.shadow_hand_dof_upper_limits - self.shadow_hand_dof_lower_limits).clamp(min=1e-6)
+        deviation = ((self.shadow_hand_dof_pos - self.open_hand_reference) / joint_range).square().clamp(max=1.0).mean(dim=-1)
+        search_active = ~(self.episode_had_contact | (self.binary_touch > 0.5).any(dim=1))
+        return self.open_hand_penalty_scale * deviation * search_active.float()
+
     def compute_reach_progress_reward(self, include_estimate=True):
         distal_keypoints = torch.stack(
             (
@@ -1727,6 +1753,9 @@ class ShadowHandGraspDexRep(BaseTask):
         self.previous_reach_distance.copy_(reach_distance)
         self.previous_reach_keypoints.copy_(keypoints)
         self.previous_reach_distance_valid[:] = True
+        if self.voxel_enabled and self.tactile_experiment != "E3":
+            contact_discovered = self.episode_had_contact | (self.binary_touch > 0.5).any(dim=1)
+            reward = torch.where(contact_discovered, reward, torch.zeros_like(reward))
         return reward
 
     def aggregate_finger_touch(self, touch):
@@ -2339,6 +2368,21 @@ class ShadowHandGraspDexRep(BaseTask):
                 relative_position,
                 torch.zeros_like(relative_position),
             )
+            if self.voxel_enabled and self.region_exploration is not None:
+                exploration_target = torch.cat((
+                    self.region_exploration.target,
+                    torch.full_like(self.right_hand_pos[:, 2:3], self.region_exploration.center_height),
+                ), dim=-1)
+                exploration_position = (exploration_target - self.right_hand_pos) / self.relative_object_position_scale
+                exploration_position = torch.where(
+                    self.region_exploration.target_valid.unsqueeze(-1),
+                    exploration_position,
+                    torch.zeros_like(exploration_position),
+                )
+                contact_discovered = self.episode_had_contact | (self.binary_touch > 0.5).any(dim=1)
+                relative_position = torch.where(
+                    contact_discovered.unsqueeze(-1), relative_position, exploration_position,
+                )
         else:
             relative_position = (
                 self.object_pos - self.right_hand_pos
@@ -2505,10 +2549,7 @@ class ShadowHandGraspDexRep(BaseTask):
             current_free,
             occupancy_map < -0.5,
         )
-        search_active = (
-            ~self.episode_had_contact if self.search_only
-            else ~self.episode_had_valid_estimate
-        )
+        search_active = ~(self.episode_had_contact | (self.binary_touch > 0.5).any(dim=1))
         newly_explored_free.logical_and_(search_active.unsqueeze(1))
         newly_explored_free.logical_and_(self.voxel_exploration_mask)
         new_voxel_count = newly_explored_free.sum(dim=1).float()
@@ -2651,9 +2692,8 @@ class ShadowHandGraspDexRep(BaseTask):
                     (self.binary_touch.unsqueeze(-1), relative_sensor_positions), dim=-1
                 ).flatten(1)
             observation_branches.append(current_touch)
-        observation_branches.append(
-            self.compute_relative_object_position_observation(),
-        )
+        target_position_branch = len(observation_branches)
+        observation_branches.append(torch.zeros_like(self.right_hand_pos))
 
         if self.tactile_experiment == "E5":
             pointnet_global = (
@@ -2713,6 +2753,7 @@ class ShadowHandGraspDexRep(BaseTask):
                 )
             )
 
+        observation_branches[target_position_branch] = self.compute_relative_object_position_observation()
         if self.region_observation_enabled:
             observation_branches.append(self.region_exploration.observation(
                 self.rigid_body_states[:, self.hand_body_idx_dict["palm"], :3],
@@ -2843,8 +2884,36 @@ class ShadowHandGraspDexRep(BaseTask):
         self.hand_positions[all_indices.to(torch.long), :] = self.saved_root_tensor[all_indices.to(torch.long), 0:3]
         self.hand_orientations[all_indices.to(torch.long), :] = self.saved_root_tensor[all_indices.to(torch.long), 3:7]
 
-        # Keep the hand at its fixed initial root pose. Only the object yaw
-        # and planar position are randomized independently.
+        initial_hand_cfg = self.tactile_cfg.get("initial_hand", {})
+        if self.voxel_enabled and initial_hand_cfg.get("random_xy", False):
+            position_cfg = self.cfg["env"]["objectPositionRandomization"]
+            x_range = position_cfg["xRange"]
+            y_range = position_cfg["yRange"]
+            offsets, outside = sample_hand_start_positions(
+                len(env_ids), x_range, y_range,
+                float(initial_hand_cfg.get("inside_probability", 1.0)),
+                float(initial_hand_cfg.get("ring_margin", 0.08)), self.device,
+            )
+            base_xy = self.object_init_state[env_ids, :2]
+            self.hand_positions[hand_indices.long(), :2] = base_xy + offsets
+            outside_height = float(initial_hand_cfg.get("outside_height_above_table", 0.05))
+            self.hand_positions[hand_indices.long(), 2] = torch.where(
+                outside,
+                torch.full_like(offsets[:, 0], self.table_top_z + outside_height),
+                torch.full_like(offsets[:, 0], self.table_top_z + float(initial_hand_cfg.get("height_above_table", 0.05))),
+            )
+            center = offsets.new_tensor([(x_range[0] + x_range[1]) / 2,
+                                         (y_range[0] + y_range[1]) / 2])
+            inward = center - offsets
+            yaw = torch.atan2(inward[:, 1], inward[:, 0]) + np.pi / 2
+            inward_rotation = quat_from_euler_xyz(
+                torch.full_like(yaw, np.pi / 2), torch.zeros_like(yaw), yaw,
+            )
+            self.hand_orientations[hand_indices.long()] = torch.where(
+                outside.unsqueeze(-1), inward_rotation,
+                self.hand_orientations[hand_indices.long()],
+            )
+
         theta = torch_rand_float(-3.14, 3.14, (len(env_ids),1), device=self.device).squeeze(-1)
         zero_angle = torch.zeros_like(theta)
         new_object_rot = quat_from_euler_xyz(
