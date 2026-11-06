@@ -33,6 +33,9 @@ _TACTILE_EPISODE_METRICS = {
     "lifted": ("Lift episode rate", 100.0),
     "contact_step_ratio": ("Contact-step ratio", 100.0),
     "contact_losses": ("Contact losses per episode", 1.0),
+    "workspace_failure": ("Workspace failure rate", 100.0),
+    "workspace_outside_table": ("Outside-table termination rate", 100.0),
+    "workspace_above_height": ("Height-limit termination rate", 100.0),
 }
 
 _UPWARD_SUPERVISION_MASK = "upward_action_supervision_mask"
@@ -131,6 +134,9 @@ class PPO:
             self.cfg_env,
         )
         self.actor_critic.to(self.device)
+        self.privileged_obs_dim = getattr(self.actor_critic, "privileged_obs_dim", 0)
+        if self.privileged_obs_dim and self.privileged_obs_dim != self.vec_env.num_states:
+            raise ValueError("Critic privileged input does not match environment state size")
         self.is_recurrent = bool(
             getattr(self.actor_critic, "is_recurrent", False)
         )
@@ -139,6 +145,8 @@ class PPO:
             if self.is_recurrent else 0
         )
         print(f"Encoder Name: {actor_critic_name}")
+        if self.privileged_obs_dim:
+            print(f"Asymmetric critic: {self.privileged_obs_dim} privileged inputs; actor observations unchanged")
         if hasattr(self.actor_critic, "initial_action_std"):
             print(
                 "Action noise std: "
@@ -157,6 +165,7 @@ class PPO:
             self.device,
             sampler,
             recurrent_hidden_state_size=self.recurrent_hidden_size,
+            privileged_obs_dim=self.privileged_obs_dim,
         )
         self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=self.learning_rate)
 
@@ -297,13 +306,19 @@ class PPO:
             self.device,
         )
 
-    def act(self, observations, recurrent_hidden_states):
+    def privileged_arguments(self):
+        if not self.privileged_obs_dim:
+            return {}
+        return {"privileged_observations": self.vec_env.get_state().to(self.device).detach().clone()}
+
+    def act(self, observations, recurrent_hidden_states, **critic_arguments):
         if self.is_recurrent:
             return self.actor_critic.act(
                 observations,
                 recurrent_hidden_states,
+                **critic_arguments,
             )
-        return self.actor_critic.act(observations) + (None,)
+        return self.actor_critic.act(observations, **critic_arguments) + (None,)
 
     def act_inference(self, observations, recurrent_hidden_states):
         if self.is_recurrent:
@@ -321,11 +336,15 @@ class PPO:
         ).to(recurrent_hidden_states.dtype)
 
     def get_last_values(self, observations, recurrent_hidden_states):
+        critic_arguments = self.privileged_arguments()
         if self.is_recurrent:
             return self.actor_critic.get_value(
                 observations,
                 recurrent_hidden_states,
+                **critic_arguments,
             )
+        if self.privileged_obs_dim:
+            return self.actor_critic.get_value(observations, **critic_arguments)
         return self.actor_critic.act(observations)[2]
 
     @staticmethod
@@ -518,6 +537,7 @@ class PPO:
                         supervision_mask.zero_()
                         current_contact_mask.zero_()
                         valid_grasp_mask.zero_()
+                    critic_arguments = self.privileged_arguments()
                     # Compute the action
                     (
                         actions,
@@ -531,6 +551,7 @@ class PPO:
                     ) = self.act(
                         current_obs_state,
                         recurrent_hidden_states,
+                        **critic_arguments,
                     )
                     action_std = sigma.exp()
                     phase_masks = {
@@ -571,6 +592,8 @@ class PPO:
                         values, actions_log_prob, mu, sigma, self.obs_device,
                         supervision_mask,
                         recurrent_hidden_states,
+                        policy_training_mask=infos.get('policy_training_mask'),
+                        **critic_arguments,
                     )
                     if self.upward_supervision_enabled:
                         if _UPWARD_SUPERVISION_MASK not in infos or "lifted" not in infos:
@@ -923,6 +946,10 @@ class PPO:
                         actions_sequence,
                         initial_hidden_states,
                         dones_sequence,
+                        **(
+                            {"privileged_observations": self.storage.privileged_observations[:, indices]}
+                            if self.privileged_obs_dim else {}
+                        ),
                     )
                     actions_batch = actions_sequence.reshape(
                         -1, self.storage.actions.size(-1)
@@ -940,6 +967,7 @@ class PPO:
                     advantages_batch = self.storage.advantages[
                         :, indices
                     ].reshape(-1, 1)
+                    training_weights = self.storage.policy_training_masks[:, indices].reshape(-1)
                     old_mu_batch = self.storage.mu[
                         :, indices
                     ].reshape(-1, self.storage.actions.size(-1))
@@ -977,6 +1005,7 @@ class PPO:
                     advantages_batch = self.storage.advantages.view(
                         -1, 1
                     )[indices]
+                    training_weights = self.storage.policy_training_masks.view(-1)[indices]
                     old_mu_batch = self.storage.mu.view(
                         -1, self.storage.actions.size(-1)
                     )[indices]
@@ -997,13 +1026,22 @@ class PPO:
                         obs_batch,
                         states_batch,
                         actions_batch,
+                        **(
+                            {"privileged_observations": self.storage.privileged_observations.flatten(0, 1)[indices]}
+                            if self.privileged_obs_dim else {}
+                        ),
                     )
+
+                if not training_weights.any():
+                    continue
+                def weighted_mean(values):
+                    return (values.reshape(-1) * training_weights).sum() / training_weights.sum()
 
                 # KL
                 if self.desired_kl != None and self.schedule == 'adaptive':
 
                     kl = torch.sum(sigma_batch - old_sigma_batch + (torch.square(old_sigma_batch.exp()) + torch.square(old_mu_batch - mu_batch)) / (2.0 * torch.square(sigma_batch.exp())) - 0.5, axis=-1)
-                    kl_mean = torch.mean(kl)
+                    kl_mean = weighted_mean(kl)
 
                     if kl_mean > self.desired_kl * 2.0:
                         self.step_size = max(1e-5, self.step_size / 1.5)
@@ -1017,7 +1055,7 @@ class PPO:
                 ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
                 surrogate = -torch.squeeze(advantages_batch) * ratio
                 surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param)
-                surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
+                surrogate_loss = weighted_mean(torch.max(surrogate, surrogate_clipped))
 
                 # Value function loss
                 if self.use_clipped_value_loss:
@@ -1025,17 +1063,17 @@ class PPO:
                                                                                                     self.clip_param)
                     value_losses = (value_batch - returns_batch).pow(2)
                     value_losses_clipped = (value_clipped - returns_batch).pow(2)
-                    value_loss = torch.max(value_losses, value_losses_clipped).mean()
+                    value_loss = weighted_mean(torch.max(value_losses, value_losses_clipped))
                 else:
-                    value_loss = (returns_batch - value_batch).pow(2).mean()
+                    value_loss = weighted_mean((returns_batch - value_batch).pow(2))
                     # print(f'returns_batch: {returns_batch}')
                     # print(f'returns_batch: {returns_batch}')
 
-                loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
+                loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * weighted_mean(entropy_batch)
                 if self.upward_supervision_enabled:
                     supervision_loss = self.compute_upward_supervision_loss(
                         mu_batch,
-                        supervision_mask_batch,
+                        supervision_mask_batch * training_weights.unsqueeze(-1),
                     )
                     loss = loss + supervision_coef * supervision_loss
                     mean_supervision_loss += supervision_loss.item()

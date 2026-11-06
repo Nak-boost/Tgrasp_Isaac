@@ -21,6 +21,7 @@ class RolloutStorage:
         device="cpu",
         sampler="sequential",
         recurrent_hidden_state_size=0,
+        privileged_obs_dim=0,
     ):
 
         self.device = device
@@ -29,6 +30,10 @@ class RolloutStorage:
         # Core
         self.observations = None
         self.states = torch.zeros(num_transitions_per_env, num_envs, states_shape, device=self.device)
+        self.privileged_observations = (
+            torch.zeros(num_transitions_per_env, num_envs, privileged_obs_dim, device=self.device)
+            if privileged_obs_dim else None
+        )
         self.rewards = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
         self.actions = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
         self.dones = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device).byte()
@@ -38,6 +43,7 @@ class RolloutStorage:
         self.values = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
         self.returns = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
         self.advantages = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
+        self.policy_training_masks = torch.ones_like(self.advantages)
         self.mu = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
         self.sigma = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
         self.upward_action_supervision_masks = torch.zeros(
@@ -62,6 +68,8 @@ class RolloutStorage:
         actions_log_prob, mu, sigma, obs_device,
         upward_action_supervision_mask=None,
         recurrent_hidden_states=None,
+        privileged_observations=None,
+        policy_training_mask=None,
     ):
         if self.step >= self.num_transitions_per_env:
             raise AssertionError("Rollout buffer overflow")
@@ -72,6 +80,14 @@ class RolloutStorage:
                 )
             self.observations[self.step].copy_(observations.to(obs_device))
         self.states[self.step].copy_(states)
+        if policy_training_mask is None:
+            self.policy_training_masks[self.step].fill_(1)
+        else:
+            self.policy_training_masks[self.step].copy_(policy_training_mask.reshape(-1, 1))
+        if self.privileged_observations is not None:
+            if privileged_observations is None or privileged_observations.shape != self.privileged_observations[self.step].shape:
+                raise ValueError("Privileged rollout observations have an incorrect shape")
+            self.privileged_observations[self.step].copy_(privileged_observations.detach())
         self.actions[self.step].copy_(actions)
         self.rewards[self.step].copy_(rewards.view(-1, 1))
         self.dones[self.step].copy_(dones.view(-1, 1))
@@ -113,7 +129,11 @@ class RolloutStorage:
 
         # Compute and normalize the advantages
         self.advantages = self.returns - self.values
-        self.advantages = (self.advantages - self.advantages.mean()) / (self.advantages.std() + 1e-8)
+        weights = self.policy_training_masks
+        count = weights.sum().clamp(min=1)
+        mean = (self.advantages * weights).sum() / count
+        variance = ((self.advantages - mean).square() * weights).sum() / count
+        self.advantages = (self.advantages - mean) / (variance.sqrt() + 1e-8) * weights
 
     def get_statistics(self):
         done = self.dones.cpu()

@@ -1,0 +1,59 @@
+seed: -1
+clip_observations: 5.0
+clip_actions: 1.0
+policy:
+  actor_critic: ActorCriticMultimodal
+  pi_hid_sizes:
+  - 1024
+  - 1024
+  - 512
+  - 512
+  vf_hid_sizes:
+  - 1024
+  - 1024
+  - 512
+  - 512
+  activation: elu
+  recurrent:
+    enabled: true
+    hidden_size: 256
+  state_dependent_std:
+    enabled: true
+    minimum: 0.05
+    maximum: 1.0
+encoder:
+  name: t20-retac-tmr05-bin-ft+dataset-BottleCap
+  pretrain_dir: model/vitac/model_and_config
+  freeze: true
+  emb_dim: 128
+  en_mode: patch
+  f_ex_mode: null
+learn:
+  agent_name: shadow_hand
+  test: false
+  resume: 0
+  save_interval: 1000
+  print_log: true
+  max_iterations: 10000
+  cliprange: 0.2
+  ent_coef: 0
+  nsteps: 64
+  noptepochs: 5
+  nminibatches: 8
+  max_grad_norm: 1
+  optim_stepsize: 0.0003
+  schedule: adaptive
+  desired_kl: 0.016
+  gamma: 0.995
+  lam: 0.95
+  init_noise_std: 0.5
+  upward_action_supervision:
+    enabled: true
+    action_index: 2
+    target_action: 0.3
+    loss_coef: 0.03
+    trigger_lift_rate: 0.25
+    success_window: 2000
+    decay_iterations: 2000
+  log_interval: 1
+  asymmetric: false

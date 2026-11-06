@@ -5,6 +5,7 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 import os
+import sys
 import shutil
 import yaml
 from utils.config import set_np_formatting, set_seed, get_args, parse_sim_params, load_cfg
@@ -15,6 +16,7 @@ from utils.logger import DataLog
 
 def train():
     print("Algorithm: ", args.algo)
+    cfg["is_training"] = not args.test
     agent_index = get_AgentIndex(cfg)
     if not args.test:
         config_params = vars(args)
@@ -25,7 +27,8 @@ def train():
         shutil.copy(args.cfg_env, args.logdir)
     else:
         cfg["env"]["numEnvs"] = cfg["env"]["num_objs"]
-        args.model_dir = os.path.join(args.logdir, 'checkpoint', 'model.pt')
+        if not args.model_dir:
+            args.model_dir = os.path.join(args.logdir, 'checkpoint', 'model.pt')
         print('Test model !!')
 
 
@@ -61,3 +64,6 @@ if __name__ == '__main__':
     sim_params = parse_sim_params(args, cfg, cfg_train)
     set_seed(cfg_train.get("seed", -1), cfg_train.get("torch_deterministic", False))
     train()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)

@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -566,12 +568,21 @@ class ActorCriticMultimodal(nn.Module):
 
         self.prop_dim = self.obs_dims["prop"]
         self.embedding_dim = encoder_cfg.get("emb_dim", 128)
+        self.privileged_obs_dim = int(env_cfg.get("privileged_obs_dim", 0))
+        if bool(env_cfg.get("asymmetric_observations", False)) != (self.privileged_obs_dim > 0):
+            raise ValueError("Initialize the environment to configure privileged_obs_dim before creating the policy")
 
         encoder_specs = env_cfg.get("obs_encoders", {})
         tactile_cfg = env_cfg.get("tactile", {})
         voxel_cfg = env_cfg.get("tactile", {}).get("voxel", {})
         local_voxel_cfg = tactile_cfg.get("local_voxel", {})
         history_cfg = tactile_cfg.get("history", {})
+        self.history_memory = bool(history_cfg.get("persistent_memory", False))
+        self.history_frame_dim = int(history_cfg.get("frame_dim", 130))
+        if self.history_memory and self.prop_dim != (
+            history_cfg["length"] * self.history_frame_dim
+        ):
+            raise ValueError("History memory requires the sampled history as the prop branch")
         geometry_cfg = tactile_cfg.get(
             "oracle_geometry", {}
         )
@@ -750,15 +761,18 @@ class ActorCriticMultimodal(nn.Module):
         joint_embedding_dim = sum(self.branch_output_dims.values())
 
         recurrent_cfg = model_cfg.get("recurrent", {})
-        self.is_recurrent = bool(recurrent_cfg.get("enabled", False))
+        self.is_recurrent = self.history_memory or bool(recurrent_cfg.get("enabled", False))
         self.recurrent_hidden_size = int(
-            recurrent_cfg.get("hidden_size", 256)
+            history_cfg.get("memory_hidden_dim", 128)
+            if self.history_memory else recurrent_cfg.get("hidden_size", 256)
         )
         if self.is_recurrent:
             if self.recurrent_hidden_size < 1:
                 raise ValueError("recurrent.hidden_size must be positive")
             self.recurrent_memory = nn.GRUCell(
-                input_size=joint_embedding_dim,
+                input_size=(
+                    self.history_frame_dim if self.history_memory else joint_embedding_dim
+                ),
                 hidden_size=self.recurrent_hidden_size,
             )
             for weight in (
@@ -773,6 +787,8 @@ class ActorCriticMultimodal(nn.Module):
                 self.recurrent_hidden_size
             )
             policy_input_dim = self.recurrent_hidden_size
+            if self.history_memory:
+                policy_input_dim += joint_embedding_dim
         else:
             self.recurrent_memory = None
             self.recurrent_normalizer = nn.Identity()
@@ -786,7 +802,7 @@ class ActorCriticMultimodal(nn.Module):
             output_gain=0.01,
         )
         self.critic = self._build_mlp(
-            input_dim=policy_input_dim,
+            input_dim=policy_input_dim + self.privileged_obs_dim,
             hidden_dims=critic_hidden_dims,
             output_dim=1,
             activation_name=activation_name,
@@ -878,6 +894,8 @@ class ActorCriticMultimodal(nn.Module):
             )
             embeddings.append(embedding)
 
+        if self.history_memory:
+            embeddings.append(branch_observations["prop"][:, -self.history_frame_dim:])
         return torch.cat(embeddings, dim=1)
 
     def initial_recurrent_state(self, batch_size, device=None):
@@ -902,12 +920,21 @@ class ActorCriticMultimodal(nn.Module):
             raise ValueError(
                 "A recurrent hidden state is required by this policy"
             )
+        memory_input = (
+            joint_embedding[:, -self.history_frame_dim:]
+            if self.history_memory else joint_embedding
+        )
         next_hidden_states = self.recurrent_memory(
-            joint_embedding,
+            memory_input,
             recurrent_hidden_states,
         )
+        policy_features = self.recurrent_normalizer(next_hidden_states)
+        if self.history_memory:
+            policy_features = torch.cat(
+                (joint_embedding[:, :-self.history_frame_dim], policy_features), dim=1,
+            )
         return (
-            self.recurrent_normalizer(next_hidden_states),
+            policy_features,
             next_hidden_states,
         )
 
@@ -930,11 +957,39 @@ class ActorCriticMultimodal(nn.Module):
             1,
         )
 
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict,
+        missing_keys, unexpected_keys, error_msgs,
+    ):
+        key = prefix + "critic.0.weight"
+        weight = state_dict.get(key)
+        target = self.critic[0].weight
+        if self.privileged_obs_dim and weight is not None and weight.shape == (
+            target.shape[0], target.shape[1] - self.privileged_obs_dim
+        ):
+            state_dict[key] = torch.cat((
+                weight, weight.new_zeros(weight.shape[0], self.privileged_obs_dim),
+            ), dim=1)
+            warnings.warn("Loaded a symmetric checkpoint; new privileged critic weights start at zero.")
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict,
+            missing_keys, unexpected_keys, error_msgs,
+        )
+
+    def value_from_features(self, policy_features, privileged_observations=None):
+        if self.privileged_obs_dim:
+            if privileged_observations is None or privileged_observations.shape != (
+                policy_features.shape[0], self.privileged_obs_dim
+            ):
+                raise ValueError("Critic requires matching privileged observations")
+            policy_features = torch.cat((policy_features, privileged_observations), dim=-1)
+        return self.critic(policy_features)
+
     def forward(self):
         raise NotImplementedError
 
     @torch.no_grad()
-    def act(self, observations, recurrent_hidden_states=None):
+    def act(self, observations, recurrent_hidden_states=None, privileged_observations=None):
         joint_embedding = self.encode_observations(observations)
         policy_features, next_hidden_states = self.apply_recurrent_memory(
             joint_embedding,
@@ -948,7 +1003,7 @@ class ActorCriticMultimodal(nn.Module):
         )
         actions = distribution.sample()
         actions_log_prob = distribution.log_prob(actions)
-        value = self.critic(policy_features)
+        value = self.value_from_features(policy_features, privileged_observations)
 
         result = (
             actions.detach(),
@@ -976,15 +1031,15 @@ class ActorCriticMultimodal(nn.Module):
         return actions_mean
 
     @torch.no_grad()
-    def get_value(self, observations, recurrent_hidden_states=None):
+    def get_value(self, observations, recurrent_hidden_states=None, privileged_observations=None):
         joint_embedding = self.encode_observations(observations)
         policy_features, _ = self.apply_recurrent_memory(
             joint_embedding,
             recurrent_hidden_states,
         )
-        return self.critic(policy_features)
+        return self.value_from_features(policy_features, privileged_observations)
 
-    def evaluate(self, obs_features, state, actions):
+    def evaluate(self, obs_features, state, actions, privileged_observations=None):
         if self.is_recurrent:
             raise RuntimeError(
                 "Use evaluate_recurrent for a recurrent policy"
@@ -1000,7 +1055,7 @@ class ActorCriticMultimodal(nn.Module):
 
         actions_log_prob = distribution.log_prob(actions)
         entropy = distribution.entropy()
-        value = self.critic(joint_embedding)
+        value = self.value_from_features(joint_embedding, privileged_observations)
 
         return (
             actions_log_prob,
@@ -1017,6 +1072,7 @@ class ActorCriticMultimodal(nn.Module):
         actions,
         initial_hidden_states,
         dones,
+        privileged_observations=None,
     ):
         if not self.is_recurrent:
             raise RuntimeError(
@@ -1056,10 +1112,14 @@ class ActorCriticMultimodal(nn.Module):
             actions_mean, action_log_std
         )
 
+        privileged_batch = (
+            privileged_observations.reshape(sequence_length * batch_size, self.privileged_obs_dim)
+            if privileged_observations is not None else None
+        )
         return (
             distribution.log_prob(flat_actions),
             distribution.entropy(),
-            self.critic(policy_features),
+            self.value_from_features(policy_features, privileged_batch),
             actions_mean,
             action_log_std,
         )

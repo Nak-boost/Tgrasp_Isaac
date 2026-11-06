@@ -60,6 +60,8 @@ def set_seed(seed, torch_deterministic=False):
 
 
 def retrieve_cfg(args, use_rlg_config=False):
+    if args.task == "ShadowHandContactGrasp":
+        return args.logdir, "cfg/ppo1/config.yaml", "cfg/shadow_hand_contact_grasp.yaml"
     if args.task == "ShadowHandGrasp":
         return os.path.join(args.logdir, "shadow_hand_grasp/{}/{}".format(args.algo, args.algo)), "cfg/{}/config.yaml".format(args.algo), "cfg/shadow_hand_grasp.yaml"
     elif args.task == "ShadowHandRandomLoadVision":
@@ -84,6 +86,8 @@ def load_cfg(args, use_rlg_config=False):
 
     if args.algo == "ppo1" and "ppoRolloutSteps" in cfg["env"]:
         cfg_train["learn"]["nsteps"] = cfg["env"]["ppoRolloutSteps"]
+    if args.algo == "ppo1" and cfg["env"].get("tactile", {}).get("search_only", False):
+        cfg_train["learn"].setdefault("upward_action_supervision", {})["enabled"] = False
 
     if args.history_length > 0:
         if args.history_length not in (4, 8, 16):

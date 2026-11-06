@@ -1,0 +1,358 @@
+graphics_device_id: 0
+env:
+  env_name: shadow_hand_contact_grasp
+  numEnvs: 1024
+  envSpacing: 1.5
+  episodeLength: 800
+  ppoRolloutSteps: 32
+  enableDebugVis: false
+  aggregateMode: 1
+  random_time: false
+  goal_cond: false
+  num_objs: 20
+  object_code_dict:
+  - hammer
+  - cubesmall
+  - banana
+  - stamp
+  - cubemedium
+  - toruslarge
+  - duck
+  - spherelarge
+  - mouse
+  - airplane
+  - cylinderlarge
+  - stapler
+  - flute
+  - piggybank
+  - alarmclock
+  - eyeglasses
+  - gamecontroller
+  - phone
+  - torusmedium
+  - knife
+  stiffnessScale: 1.0
+  forceLimitScale: 1.0
+  useRelativeControl: false
+  dofSpeedScale: 20.0
+  actionsMovingAverage: 0.2
+  controlFrequencyInv: 1
+  startPositionNoise: 0.0
+  startRotationNoise: 0.0
+  resetPositionNoise: 0.0
+  resetRotationNoise: 0.0
+  resetDofPosRandomInterval: 0.0
+  resetDofVelRandomInterval: 0.0
+  distRewardScale: 0.5
+  transition_scale: 0.15
+  orientation_scale: 0.1
+  rotRewardScale: 1.0
+  rotEps: 0.1
+  actionPenaltyScale: -0.0002
+  reachGoalBonus: 160
+  fallDistance: 0.4
+  fallPenalty: 0.0
+  objectType: pot
+  observationType: tactile
+  obs_dim:
+    prop: 1040
+    relative_object_position: 3
+  obs_encoders:
+    prop:
+      type: mlp
+      hidden_dims:
+      - 256
+      - 128
+      activation: elu
+      embedding_normalization: layer_norm
+    relative_object_position:
+      type: identity
+  tactile:
+    enabled: true
+    initial_hand:
+      corner: false
+      random_xy: false
+    workspace:
+      enabled: true
+      max_height_above_table: 0.5
+      failure_penalty: 10.0
+    hand_dof_count: 22
+    experiment: E2
+    contact_loss_reset_steps: 100
+    relative_object_position:
+      enabled: true
+      source: tactile_estimate
+      mask_probability: 0.0
+      scale:
+      - 0.35
+      - 0.35
+      - 0.4
+      estimator:
+        reliable_alpha: 0.6
+        fallback_alpha: 0.2
+        fallback_quality: 0.3
+        quality_decay: 0.99
+        minimum_quality: 0.1
+        minimum_contacts: 2
+        minimum_eigenvalue_ratio: 0.05
+        maximum_residual: 0.03
+        minimum_forward_fraction: 0.6
+        maximum_center_distance: 0.2
+        maximum_hand_distance: 0.4
+        maximum_height_above_table: 0.4
+      oracle_during_training: false
+    touch:
+      layout: pad14
+      asset_file: mjcf/open_ai_assets/hand/shadow_hand_tactile.xml
+      force_mode: normal
+      on_threshold: 1.0
+      off_threshold: 0.5
+    reward:
+      per_finger_contact: 0.01
+      valid_grasp_contact: 0.02
+      valid_grasp_steps: 3
+      upward_action: 0.075
+      upward_action_saturation: 0.3
+      lift_height: 0.5
+      lift_target_height: 0.12
+      lift_hold: 0.5
+      lift_hold_steps: 10
+      estimated_reach: 1.0
+      reach_palm_weight: 0.5
+      reach_distal_weight: 1.0
+      reach_middle_weight: 0.25
+      reach_proximal_weight: 0.0
+      voxel_exploration: 0.0
+      voxel_exploration_new_voxel_cap: 4
+      voxel_exploration_height_layers: 5
+      palm_up_penalty: 0.0
+      palm_up_penalty_angle_degrees: 90.0
+      open_hand_penalty: 0.0
+    history:
+      length: 8
+      stride: 3
+      frame_dim: 130
+      persistent_memory: true
+      memory_hidden_dim: 128
+    voxel:
+      enabled: false
+    local_voxel:
+      enabled: false
+    search_only: false
+  objectPositionRandomization:
+    enabled: false
+    xRange:
+    - -0.1
+    - 0.1
+    yRange:
+    - -0.1
+    - 0.1
+  handAgentIndex: '[[0, 1, 2, 3, 4, 5]]'
+  asymmetric_observations: true
+  privileged_geometry:
+    enabled: true
+    num_points: 256
+    distance_scale: 0.2
+  successTolerance: 0.1
+  printNumSuccesses: false
+  maxConsecutiveSuccesses: 0
+  clip_observations: 5.0
+  asset:
+    assetRoot: ../assets
+    assetFileName: mjcf/open_ai_assets/hand/shadow_hand.xml
+    assetFileNameBlock: urdf/objects/cube_multicolor.urdf
+    assetFileNameBall: urdf/objects/ball.urdf
+    assetFileNameEgg: mjcf/open_ai_assets/hand/egg.xml
+    assetFileNamePen: mjcf/open_ai_assets/hand/pen.xml
+    assetFileNameObj: /grab_meshdata/
+    assetFileNameObj_raw: /grab_raw_models/
+  contact_grasp:
+    start_x: -0.2
+    height_above_table: 0.158
+    roll_degrees: 135.0
+    forward_gap_range:
+    - 0.025
+    - 0.06
+    lateral_range: 0.02
+    speed: 0.08
+    distance: 0.4
+    settle_steps: 30
+    max_steps: 360
+    position_kp: 2000.0
+    position_kd: 100.0
+    rotation_kp: 20.0
+    rotation_kd: 2.0
+    force_limit: 250.0
+    torque_limit: 1.6
+    joint_positions:
+      FFJ3: 0.08
+      FFJ2: 0.15
+      FFJ1: 0.1
+      FFJ0: 0.05
+      MFJ2: 0.15
+      MFJ1: 0.1
+      MFJ0: 0.05
+      RFJ3: -0.03
+      RFJ2: 0.15
+      RFJ1: 0.1
+      RFJ0: 0.05
+      LFJ3: -0.08
+      LFJ2: 0.15
+      LFJ1: 0.1
+      LFJ0: 0.05
+      THJ4: 0.4
+      THJ3: 0.25
+      THJ0: -0.2
+task:
+  randomize: false
+  randomization_params:
+    frequency: 600
+    observations:
+      range:
+      - 0
+      - 0.002
+      range_correlated:
+      - 0
+      - 0.001
+      operation: additive
+      distribution: gaussian
+      schedule: linear
+      schedule_steps: 40000
+    actions:
+      range:
+      - 0.0
+      - 0.05
+      range_correlated:
+      - 0
+      - 0.015
+      operation: additive
+      distribution: gaussian
+      schedule: linear
+      schedule_steps: 40000
+    sim_params:
+      gravity:
+        range:
+        - 0
+        - 0.4
+        operation: additive
+        distribution: gaussian
+        schedule: linear
+        schedule_steps: 40000
+    actor_params:
+      hand:
+        color: true
+        tendon_properties:
+          damping:
+            range:
+            - 0.3
+            - 3.0
+            operation: scaling
+            distribution: loguniform
+            schedule: linear
+            schedule_steps: 30000
+          stiffness:
+            range:
+            - 0.75
+            - 1.5
+            operation: scaling
+            distribution: loguniform
+            schedule: linear
+            schedule_steps: 30000
+        dof_properties:
+          damping:
+            range:
+            - 0.3
+            - 3.0
+            operation: scaling
+            distribution: loguniform
+            schedule: linear
+            schedule_steps: 30000
+          stiffness:
+            range:
+            - 0.75
+            - 1.5
+            operation: scaling
+            distribution: loguniform
+            schedule: linear
+            schedule_steps: 30000
+          lower:
+            range:
+            - 0
+            - 0.01
+            operation: additive
+            distribution: gaussian
+            schedule: linear
+            schedule_steps: 30000
+          upper:
+            range:
+            - 0
+            - 0.01
+            operation: additive
+            distribution: gaussian
+            schedule: linear
+            schedule_steps: 30000
+        rigid_body_properties:
+          mass:
+            range:
+            - 0.5
+            - 1.5
+            operation: scaling
+            distribution: uniform
+            schedule: linear
+            schedule_steps: 30000
+        rigid_shape_properties:
+          friction:
+            num_buckets: 250
+            range:
+            - 0.7
+            - 1.3
+            operation: scaling
+            distribution: uniform
+            schedule: linear
+            schedule_steps: 30000
+      object:
+        scale:
+          range:
+          - 0.95
+          - 1.05
+          operation: scaling
+          distribution: uniform
+          schedule: linear
+          schedule_steps: 30000
+        rigid_body_properties:
+          mass:
+            range:
+            - 0.5
+            - 1.5
+            operation: scaling
+            distribution: uniform
+            schedule: linear
+            schedule_steps: 30000
+        rigid_shape_properties:
+          friction:
+            num_buckets: 250
+            range:
+            - 0.7
+            - 1.3
+            operation: scaling
+            distribution: uniform
+            schedule: linear
+            schedule_steps: 30000
+sim:
+  substeps: 2
+  physx:
+    num_threads: 4
+    solver_type: 1
+    contact_collection: 2
+    num_position_iterations: 8
+    num_velocity_iterations: 0
+    contact_offset: 0.002
+    rest_offset: 0.0
+    bounce_threshold_velocity: 0.2
+    max_depenetration_velocity: 1000.0
+    default_buffer_size_multiplier: 5.0
+  flex:
+    num_outer_iterations: 5
+    num_inner_iterations: 20
+    warm_start: 0.8
+    relaxation: 0.75
